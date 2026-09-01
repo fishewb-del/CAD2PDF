@@ -319,5 +319,5 @@ For the record, in case someone technical asks later:
   and reviewable rather than a pile of clicks somebody has to remember.
 - Uploaded drawings are never written to persistent storage. Each conversion
   runs in a temporary directory that is deleted when the response is sent.
-- Other deployment options (Hugging Face Spaces, Fly.io, plain Docker) are in
+- Other deployment options (Fly.io, any plain Docker host) are in
   [DEPLOY.md](DEPLOY.md).

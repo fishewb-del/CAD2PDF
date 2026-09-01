@@ -70,10 +70,8 @@ still runs and simply asks users to upload DXF instead.
 
 **Never deployed anything before?** Follow [RENDER.md](RENDER.md), a
 click-by-click walkthrough that puts this online for free on Render in about
-20 minutes, with no terminal and no credit card. Hugging Face Spaces is
-covered the same way in
-[deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md), and
-[DEPLOY.md](DEPLOY.md) summarises every host.
+20 minutes, with no terminal and no credit card. [DEPLOY.md](DEPLOY.md)
+covers the other hosts.
 
 The app has to run on a server — it can't be a static page, since it needs
 Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are

@@ -66,7 +66,7 @@ def test_status_page_shows_the_commit_link(client, render_env):
 
 def test_build_info_survives_a_host_with_no_git_metadata(monkeypatch):
     for var in ("RENDER", "RENDER_GIT_REPO_SLUG", "RENDER_GIT_BRANCH",
-                "RENDER_GIT_COMMIT", "SPACE_ID", "FLY_APP_NAME",
+                "RENDER_GIT_COMMIT", "FLY_APP_NAME",
                 "CAD2PDF_GIT_REPO", "CAD2PDF_GIT_BRANCH",
                 "CAD2PDF_GIT_COMMIT"):
         monkeypatch.delenv(var, raising=False)
