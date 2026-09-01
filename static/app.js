@@ -63,6 +63,7 @@
   // inside #viewer-stage, so one set of gestures drives either.
 
   const view = { scale: 1, x: 0, y: 0, fitScale: 1 };
+  const PREVIEW_TIMEOUT_MS = 90000;
   const MIN_SCALE = 0.05;
   const MAX_SCALE = 200;
 
@@ -196,8 +197,22 @@
     body.append("file", file);
     body.append("units", document.getElementById("units").value);
 
+    // Never spin forever. A drawing big enough to outlast this would also
+    // outlast the server's own worker timeout, and the user is left staring
+    // at a spinner with no way to tell whether anything is happening.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
+    // Reassure after a few seconds rather than going quiet.
+    const slowNotice = setTimeout(() => {
+      if (token === previewToken) {
+        setStatus({ text: "Still opening the drawing, it is a big one…", busy: true }, false);
+      }
+    }, 4000);
+
     try {
-      const res = await fetch("/api/preview", { method: "POST", body: body });
+      const res = await fetch("/api/preview", {
+        method: "POST", body: body, signal: controller.signal,
+      });
       // A newer file was picked while this was in flight; drop the result.
       if (token !== previewToken) return;
       const data = await res.json();
@@ -205,20 +220,12 @@
 
       // Size the stage from the aspect ratio the server measured, rather
       // than relying on the browser to infer an SVG's intrinsic height
-      // from its viewBox. Both formats then measure identically.
+      // from its viewBox.
       const BASE_WIDTH = 1200;
       stage.style.width = BASE_WIDTH + "px";
       stage.style.height = BASE_WIDTH / (data.aspect || 1) + "px";
+      stage.innerHTML = data.svg;
 
-      if (data.format === "svg") {
-        stage.innerHTML = data.svg;
-      } else {
-        const img = document.createElement("img");
-        img.alt = "Preview of the drawing";
-        img.src = "data:image/png;base64," + data.png_b64;
-        stage.appendChild(img);
-        await img.decode().catch(() => {});
-      }
       if (data.note) {
         viewerNote.textContent = data.note;
         viewerNote.hidden = false;
@@ -231,8 +238,16 @@
       // A failed preview must not block converting: the PDF path may well
       // succeed, and the drawing is still perfectly valid.
       viewerPanel.hidden = true;
-      setStatus("Preview unavailable: " + err.message, true);
+      setStatus(
+        err.name === "AbortError"
+          ? "The preview took too long for this drawing, so it was stopped. " +
+            "You can still convert it to PDF."
+          : "Preview unavailable: " + err.message + " You can still convert to PDF.",
+        true
+      );
     } finally {
+      clearTimeout(deadline);
+      clearTimeout(slowNotice);
       if (token === previewToken) viewer.classList.remove("loading");
     }
   }

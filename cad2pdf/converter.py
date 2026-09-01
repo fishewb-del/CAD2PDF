@@ -31,8 +31,17 @@ from typing import Optional, Tuple
 import ezdxf
 from ezdxf.addons.drawing import RenderContext, Frontend
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+from ezdxf.addons.drawing import layout as ezdxf_layout
+from ezdxf.addons.drawing.config import (
+    Configuration,
+    HatchPolicy,
+    LinePolicy,
+    TextPolicy,
+)
 from ezdxf.addons.drawing.properties import LayoutProperties
+from ezdxf.addons.drawing.svg import SVGBackend
 from ezdxf import bbox as ezdxf_bbox
+from ezdxf.math import BoundingBox2d
 
 import matplotlib
 
@@ -43,8 +52,6 @@ matplotlib.use("Agg")
 # conversion fully self-contained.
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_pdf import FigureCanvasPdf
-from matplotlib.backends.backend_svg import FigureCanvasSVG
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from .fontsetup import ensure_fonts
 
@@ -502,6 +509,25 @@ _FOREIGN_RE = re.compile(
 _EVENT_ATTR_RE = re.compile(r"""\son[a-z]+\s*=\s*("[^"]*"|'[^']*')""",
                             re.IGNORECASE)
 _SVG_OPEN_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+_VIEWBOX_RE = re.compile(r'viewBox="\s*([-\d.eE]+)\s+([-\d.eE]+)\s+'
+                         r'([-\d.eE]+)\s+([-\d.eE]+)\s*"', re.IGNORECASE)
+
+
+def _svg_aspect(svg: str, fallback: float) -> float:
+    """
+    Width/height of the SVG's viewBox.
+
+    The viewer sizes its stage from this. Taking it from the viewBox rather
+    than recomputing it from the drawing extents means the two can never
+    disagree and render the drawing stretched.
+    """
+    match = _VIEWBOX_RE.search(svg)
+    if not match:
+        return fallback
+    width, height = float(match.group(3)), float(match.group(4))
+    if width <= 0 or height <= 0:
+        return fallback
+    return width / height
 
 
 def _sanitize_svg(svg: str) -> str:
@@ -531,92 +557,105 @@ def _make_svg_responsive(svg: str) -> str:
 
 @dataclasses.dataclass
 class PreviewResult:
+    svg: str
     drawing_units: str
     units_autodetected: bool
     drawing_extents_mm: Tuple[float, float]
     entity_count: int
-    format: str                      # "svg" or "png"
-    aspect: float = 1.0              # rendered width / height
-    svg: Optional[str] = None
-    png_bytes: Optional[bytes] = None
+    aspect: float                    # rendered width / height
+    simplified: bool = False
     note: Optional[str] = None
 
 
-def _build_preview_figure(doc, size_in: float, line_width_scale: float):
-    """Draw model space onto a figure sized to the drawing's own aspect."""
-    xmin, ymin, xmax, ymax = _drawing_extents(doc)
-    width_units = xmax - xmin
-    height_units = ymax - ymin
+# Rendering the preview through matplotlib took roughly ten seconds on a
+# 3,400-entity drawing, almost all of it inside the matplotlib backend. On a
+# 0.1 CPU instance that is well past the worker timeout, which is what made
+# the viewer appear to hang. ezdxf's own SVG backend draws the same content
+# about twenty times faster and emits a smaller file. It is used for the
+# preview only; the PDF still goes through matplotlib, because that is what
+# gives us exact control over page geometry and therefore the print scale.
 
-    aspect = height_units / width_units if width_units else 1.0
-    if aspect >= 1.0:
-        fig_h_in, fig_w_in = size_in, size_in / aspect
-    else:
-        fig_w_in, fig_h_in = size_in, size_in * aspect
+# Dense drawings get a simplified pass: text becomes filled rectangles and
+# line styles collapse to solid. That cuts the file several times over
+# while keeping the shape of the drawing readable at a glance, which is all
+# the preview is for.
+# Slack around the drawing, as a fraction of its longest side.
+_PREVIEW_PADDING = 0.015
 
-    fig = Figure(figsize=(fig_w_in, fig_h_in), dpi=100)
-    fig.patch.set_facecolor("white")
+_SIMPLIFIED_CONFIG = Configuration(
+    text_policy=TextPolicy.REPLACE_FILL,
+    line_policy=LinePolicy.SOLID,
+    hatch_policy=HatchPolicy.SHOW_OUTLINE,
+)
 
-    ax = fig.add_axes((0.0, 0.0, 1.0, 1.0))
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    ax.set_aspect("equal", adjustable="box")
-    ax.axis("off")
+_SIMPLIFIED_NOTE = (
+    "This drawing is dense, so the preview is simplified: text is shown as "
+    "blocks and line styles as solid. It is only the on-screen preview - "
+    "the converted PDF has the full drawing at full fidelity."
+)
 
+
+def _render_svg(doc, config: Optional[Configuration]):
+    """Draw model space with ezdxf's native SVG backend."""
     msp = doc.modelspace()
     ctx = RenderContext(doc)
+
+    # CAD model space is conventionally a dark background, so ezdxf resolves
+    # the default entity colour (ACI 7) to white, which is invisible on a
+    # white page. Declaring a white background makes it resolve to black.
     layout_props = LayoutProperties.from_layout(msp)
     layout_props.set_colors(bg="#FFFFFF")
 
-    backend = MatplotlibBackend(ax, adjust_figure=False)
-    frontend = Frontend(ctx, backend)
-    if line_width_scale != 1.0:
-        try:
-            backend.line_width_scaling = line_width_scale
-        except AttributeError:
-            pass
+    backend = SVGBackend()
+    kwargs = {"config": config} if config is not None else {}
+    frontend = Frontend(ctx, backend, **kwargs)
     frontend.draw_layout(msp, finalize=True, layout_properties=layout_props)
 
-    # finalize() re-enables autoscale, which would drift the limits away
-    # from the true extents. Pin them back.
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    ax.set_aspect("equal", adjustable="box")
-    ax.autoscale(False)
+    # The backend has already recorded every primitive, so its bounding box
+    # is the drawing extents for free. Asking ezdxf.bbox separately costs
+    # another full pass over the document for the same answer.
+    box = backend.player().bbox()
+    if not box.has_data:
+        return "", box
 
-    return fig, (width_units, height_units), (fig_w_in, fig_h_in)
+    # Render a slightly larger region than the content. Without this the
+    # drawing is drawn hard against the viewBox edge and the strokes on the
+    # outermost walls are half clipped, which reads as a missing wall.
+    pad = max(box.size.x, box.size.y) * _PREVIEW_PADDING
+    render_box = BoundingBox2d([
+        (box.extmin.x - pad, box.extmin.y - pad),
+        (box.extmax.x + pad, box.extmax.y + pad),
+    ])
+
+    # get_string() transforms the recording in place, so read the box first.
+    svg = backend.get_string(
+        ezdxf_layout.Page(0, 0, ezdxf_layout.Units.mm),
+        render_box=render_box,
+    )
+    return svg, box
 
 
 def render_preview(
     input_path: str,
-    size_in: float = 11.0,
     line_width_scale: float = 1.0,
     units: str = "auto",
-    max_svg_bytes: int = 6 * 1024 * 1024,
-    png_max_px: int = 2200,
+    max_svg_bytes: int = 4 * 1024 * 1024,
 ) -> PreviewResult:
     """
-    Render model space for on-screen viewing, panning and zooming.
+    Render model space to SVG for on-screen viewing, panning and zooming.
 
     This is deliberately NOT the plotted sheet: no paper, no margin, no
     scale applied. It is the drawing itself, so you can check the file is
     the right one and the geometry came across before committing to a
     conversion.
 
-    SVG is preferred because it stays sharp no matter how far you zoom in,
-    right down to dimension text. A drawing dense enough to blow past
-    `max_svg_bytes` would also make the browser crawl, so those fall back
-    to a high-resolution raster image, which pans and zooms the same way
-    and just goes soft at extreme magnification.
-
     Args:
         input_path: path to a .dxf file.
-        size_in: longest edge of the rendered canvas, in inches. Sets the
-            SVG's internal coordinate space; the browser scales it.
-        line_width_scale: multiplier applied to rendered line widths.
+        line_width_scale: unused; kept so callers can pass the same
+            arguments they pass to convert_dxf_to_pdf.
         units: drawing units, or "auto" to read $INSUNITS.
-        max_svg_bytes: above this, fall back to PNG.
-        png_max_px: longest edge of the PNG fallback, in pixels.
+        max_svg_bytes: above this, re-render simplified rather than send a
+            file that would bog down the browser.
     """
     doc = ezdxf.readfile(input_path)
 
@@ -627,51 +666,38 @@ def render_preview(
         raise ValueError(f"units must be 'auto' or one of {sorted(UNITS_TO_MM)}")
     unit_to_mm = UNITS_TO_MM[units]
 
-    fig, (width_units, height_units), (fig_w_in, fig_h_in) = (
-        _build_preview_figure(doc, size_in, line_width_scale)
-    )
-    entity_count = sum(1 for _ in doc.modelspace())
-    extents_mm = (width_units * unit_to_mm, height_units * unit_to_mm)
+    svg, box = _render_svg(doc, None)
+    simplified = False
+    note = None
 
-    buffer = io.BytesIO()
-    FigureCanvasSVG(fig)
-    fig.savefig(buffer, format="svg", facecolor="white")
-    raw = buffer.getvalue()
+    if len(svg.encode("utf-8", errors="replace")) > max_svg_bytes:
+        svg, box = _render_svg(doc, _SIMPLIFIED_CONFIG)
+        simplified = True
+        note = _SIMPLIFIED_NOTE
 
-    if len(raw) <= max_svg_bytes:
-        svg = raw.decode("utf-8", errors="replace")
-        # Strip the XML prolog and any DOCTYPE: this markup is injected into
-        # an existing HTML document, where only <svg> itself is valid.
-        start = svg.find("<svg")
-        if start > 0:
-            svg = svg[start:]
-        return PreviewResult(
-            drawing_units=units,
-            units_autodetected=units_autodetected,
-            drawing_extents_mm=extents_mm,
-            entity_count=entity_count,
-            format="svg",
-            aspect=fig_w_in / fig_h_in,
-            svg=_make_svg_responsive(_sanitize_svg(svg)),
-        )
+    if not box.has_data or box.size.x <= 0 or box.size.y <= 0:
+        raise ValueError("Drawing has no visible geometry in model space")
 
-    png = io.BytesIO()
-    FigureCanvasAgg(fig)
-    fig.savefig(
-        png, format="png", facecolor="white",
-        dpi=max(50.0, png_max_px / max(fig_w_in, fig_h_in)),
-    )
+    # Two different extents, each right for its job. The aspect ratio has to
+    # come from the recorder, because that is what the SVG's own viewBox was
+    # built from and the viewer sizes its stage from it. The size we report
+    # comes from the same function the conversion uses, so the preview and
+    # the finished PDF never quote different dimensions for one drawing.
+    xmin, ymin, xmax, ymax = _drawing_extents(doc)
+
+    # Strip the XML prolog: this markup is injected into an existing HTML
+    # document, where only the <svg> element itself is valid.
+    start = svg.find("<svg")
+    if start > 0:
+        svg = svg[start:]
+
     return PreviewResult(
+        svg=_make_svg_responsive(_sanitize_svg(svg)),
         drawing_units=units,
         units_autodetected=units_autodetected,
-        drawing_extents_mm=extents_mm,
-        entity_count=entity_count,
-        format="png",
-        aspect=fig_w_in / fig_h_in,
-        png_bytes=png.getvalue(),
-        note=(
-            "This drawing is too dense for a vector preview, so this is a "
-            "high-resolution image instead. It will go soft if you zoom "
-            "right in. The converted PDF is still full vector."
-        ),
+        drawing_extents_mm=((xmax - xmin) * unit_to_mm, (ymax - ymin) * unit_to_mm),
+        entity_count=sum(1 for _ in doc.modelspace()),
+        aspect=_svg_aspect(svg, box.size.x / box.size.y),
+        simplified=simplified,
+        note=note,
     )

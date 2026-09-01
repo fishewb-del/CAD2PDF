@@ -147,9 +147,19 @@ text, and it shows the *drawing* rather than the plotted sheet - no paper,
 no margin, no scale applied. It is there to answer "is this the right file
 and did the geometry come across" before you commit to a conversion.
 
-Drawings dense enough to make a multi-megabyte SVG fall back to a
-high-resolution raster image, which pans and zooms identically and only
-goes soft at extreme magnification. The PDF is full vector either way.
+Drawings dense enough to make a multi-megabyte SVG are re-rendered
+simplified: text becomes blocks and line styles collapse to solid, which
+cuts the file several times over while keeping the drawing readable at a
+glance. It stays vector, so it still zooms. The PDF is unaffected and
+always carries the full drawing.
+
+The preview is rendered by ezdxf's own SVG backend rather than through
+matplotlib. On a 3,400-entity drawing that is the difference between 11
+seconds and 2, and on a 0.1 CPU instance the matplotlib path overran the
+worker timeout entirely and the viewer appeared to hang. The PDF still goes
+through matplotlib, because that is what gives exact control over page
+geometry and therefore the printed scale: the preview is for looking at,
+the PDF is the thing that has to measure true.
 
 ## Sheet sizes
 
