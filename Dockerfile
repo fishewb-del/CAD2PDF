@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# --disable-werror is required: LibreDWG builds with -Werror, and newer GCC
+# (Debian bookworm's) raises -Walloc-size on its own object-allocation
+# macros, which would otherwise fail the build.
+
 WORKDIR /build
 RUN curl -sSL -o libredwg.tar.gz \
         "https://github.com/LibreDWG/libredwg/releases/download/${LIBREDWG_VERSION}/libredwg-${LIBREDWG_VERSION}.tar.gz" \
@@ -18,6 +22,7 @@ RUN curl -sSL -o libredwg.tar.gz \
     && cd "libredwg-${LIBREDWG_VERSION}" \
     && ./configure --disable-python --disable-bindings \
                    --disable-shared --enable-static \
+                   --disable-werror \
     && make -j"$(nproc)" \
     && cp programs/dwg2dxf /usr/local/bin/dwg2dxf \
     && strip /usr/local/bin/dwg2dxf

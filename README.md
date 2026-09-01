@@ -114,7 +114,7 @@ The Docker image builds it for you. To install it manually:
 ```bash
 curl -sSLO https://github.com/LibreDWG/libredwg/releases/download/0.13.3/libredwg-0.13.3.tar.gz
 tar xzf libredwg-0.13.3.tar.gz && cd libredwg-0.13.3
-./configure --disable-python --disable-bindings --disable-shared --enable-static
+./configure --disable-python --disable-bindings --disable-shared --enable-static --disable-werror
 make -j"$(nproc)"
 sudo cp programs/dwg2dxf /usr/local/bin/ && sudo strip /usr/local/bin/dwg2dxf
 ```
