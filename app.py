@@ -292,10 +292,11 @@ def api_preview():
                 ok=False, error=f"Could not read this drawing: {exc}"
             ), 400
 
-    payload = {
+    return jsonify({
         "ok": True,
-        "format": preview.format,
+        "svg": preview.svg,
         "aspect": round(preview.aspect, 6),
+        "simplified": preview.simplified,
         "note": preview.note,
         "info": {
             "units": preview.drawing_units,
@@ -307,12 +308,7 @@ def api_preview():
             ),
             "entity_count": preview.entity_count,
         },
-    }
-    if preview.format == "svg":
-        payload["svg"] = preview.svg
-    else:
-        payload["png_b64"] = base64.b64encode(preview.png_bytes).decode("ascii")
-    return jsonify(payload)
+    })
 
 
 @app.post("/api/convert")

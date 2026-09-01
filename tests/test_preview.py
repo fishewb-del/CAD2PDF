@@ -3,8 +3,8 @@ Tests for the drawing viewer: the preview you pan and zoom around before
 committing to a conversion.
 """
 
-import base64
 import io
+import re
 
 import ezdxf
 import pytest
@@ -46,7 +46,6 @@ def _post(client, data_bytes, filename="plan.dxf", **fields):
 def test_preview_returns_scalable_svg(client):
     body = _post(client, _dxf_bytes()).get_json()
     assert body["ok"] is True
-    assert body["format"] == "svg"
     svg = body["svg"]
     # A viewBox with no fixed width/height is what lets the browser scale
     # it; keeping width="720pt" would pin the drawing to one size.
@@ -56,10 +55,13 @@ def test_preview_returns_scalable_svg(client):
 
 
 def test_preview_reports_the_aspect_ratio(client):
-    body = _post(client, _dxf_bytes(width=4800, height=2400)).get_json()
+    body = _post(client, _dxf_bytes(width=4800, height=2400, text=False)).get_json()
     # The viewer sizes its stage from this rather than trusting the browser
-    # to infer an SVG's height, so it has to be right.
-    assert body["aspect"] == pytest.approx(2.0, rel=0.02)
+    # to infer an SVG's height, so it has to be right. It must match the
+    # SVG's own viewBox, or the drawing renders stretched.
+    assert body["aspect"] == pytest.approx(2.0, rel=0.05)
+    vb = re.search(r'viewBox="([^"]+)"', body["svg"]).group(1).split()
+    assert float(vb[2]) / float(vb[3]) == pytest.approx(body["aspect"], rel=0.02)
 
 
 def test_preview_reads_units_from_the_drawing(client):
@@ -90,18 +92,45 @@ def test_preview_svg_carries_no_scripts_or_handlers(client):
     assert "onload=" not in svg and "onclick=" not in svg
 
 
-def test_dense_drawings_fall_back_to_a_raster_preview(tmp_path):
+def test_dense_drawings_get_a_simplified_preview(tmp_path):
     """
-    A drawing too dense to ship as vectors comes back as an image instead,
-    with an explanation, rather than freezing the browser.
+    A drawing too dense to ship whole is re-rendered simplified rather than
+    sent as a file that would bog the browser down. It stays vector, so it
+    still zooms, and it says so.
     """
     path = tmp_path / "plan.dxf"
     path.write_bytes(_dxf_bytes())
-    result = render_preview(str(path), max_svg_bytes=200)
-    assert result.format == "png"
-    assert result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
-    assert result.svg is None
-    assert "high-resolution image" in result.note
+
+    full = render_preview(str(path))
+    assert full.simplified is False
+    assert full.note is None
+
+    simplified = render_preview(str(path), max_svg_bytes=200)
+    assert simplified.simplified is True
+    assert "simplified" in simplified.note
+    assert simplified.svg.lstrip().startswith("<svg")
+    # Still smaller, still vector, still the same drawing.
+    assert len(simplified.svg) < len(full.svg)
+    assert simplified.aspect == pytest.approx(full.aspect, rel=0.05)
+
+
+def test_preview_and_conversion_report_the_same_drawing_size(tmp_path):
+    """
+    The preview quoting one size and the finished PDF quoting another looks
+    exactly like a bug, so both read the extents the same way.
+    """
+    from cad2pdf.converter import convert_dxf_to_pdf
+
+    path = tmp_path / "plan.dxf"
+    path.write_bytes(_dxf_bytes())
+
+    preview = render_preview(str(path))
+    converted = convert_dxf_to_pdf(
+        str(path), str(tmp_path / "out.pdf"), paper="ARCH D"
+    )
+    assert [round(v, 1) for v in preview.drawing_extents_mm] == [
+        round(v, 1) for v in converted.drawing_extents_mm
+    ]
 
 
 def test_preview_rejects_a_non_cad_file(client):

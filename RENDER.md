@@ -301,6 +301,8 @@ instance with more than 512 MB.
 | `/status` shows **DWG conversion: not available** | The image was built without LibreDWG | Confirm the service runtime is **Docker**, not Python, then rebuild |
 | "no fonts available, not even fallback fonts" | The server has no fonts, so text cannot be drawn | Fixed in the image. If you see it, you are on an old build: **Manual Deploy → Clear build cache & deploy**, then check `/status` says text rendering is available |
 | The drawing preview never appears | The preview call failed; converting may still work | Try converting anyway. If a very large drawing, the free instance may have run out of memory, see Step 11 |
+| The preview spins for a long time on a big drawing | 0.1 CPU is slow, and a dense drawing takes real work | It gives up after 90 seconds and says so rather than spinning forever. Converting still works. Step 11 if it is a daily annoyance |
+| Converting a large drawing takes a minute or more | The PDF render is the slow part on 0.1 CPU | Expected on the free plan. Step 11 |
 | `/status` shows an old commit | The deploy has not finished, or failed | **Events** tab tells you which |
 | Repository not listed when connecting | Render was not granted access to it | **Configure account** on the connect screen, tick CAD2PDF on GitHub |
 
