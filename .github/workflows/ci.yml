@@ -106,9 +106,17 @@ jobs:
       # This image clones the app from GitHub, so it verifies the exact
       # Dockerfile a Space will build from the deploy guide.
       - name: Build Space image
+        env:
+          # GITHUB_REF_NAME is "<pr number>/merge" on a pull_request event.
+          # That ref is not a branch and cannot be cloned, so this job only
+          # ever worked on push events. Use the PR's head branch instead,
+          # and its repository, so pull requests from forks build too.
+          SPACE_REPO: ${{ github.event.pull_request.head.repo.clone_url || format('{0}/{1}.git', github.server_url, github.repository) }}
+          SPACE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           docker build -f deploy/huggingface/Dockerfile \
-            --build-arg REPO_BRANCH="${GITHUB_REF_NAME}" \
+            --build-arg REPO_URL="$SPACE_REPO" \
+            --build-arg REPO_BRANCH="$SPACE_BRANCH" \
             -t cad2pdf:hf .
 
       - name: dwg2dxf is present
