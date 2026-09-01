@@ -63,3 +63,48 @@ jobs:
       - name: Stop container
         if: always()
         run: docker stop cad2pdf || true
+
+  huggingface:
+    name: Hugging Face Space image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This image clones the app from GitHub, so it verifies the exact
+      # Dockerfile a Space will build from the deploy guide.
+      - name: Build Space image
+        run: |
+          docker build -f deploy/huggingface/Dockerfile \
+            --build-arg REPO_BRANCH="${GITHUB_REF_NAME}" \
+            -t cad2pdf:hf .
+
+      - name: dwg2dxf is present
+        run: docker run --rm cad2pdf:hf dwg2dxf --version
+
+      - name: Start container on the Space port
+        run: |
+          docker run -d --rm -p 8000:8000 --name hf cad2pdf:hf
+          for i in $(seq 1 45); do
+            curl -sf http://localhost:8000/healthz >/dev/null && exit 0
+            sleep 2
+          done
+          echo "container never became healthy"; docker logs hf; exit 1
+
+      - name: Converts a drawing end to end
+        run: |
+          code=$(curl -s -o hf.json -w '%{http_code}' \
+            -F file=@examples/sample-floor-plan.dxf \
+            -F scale=1:50 -F paper=A3 \
+            http://localhost:8000/api/convert)
+          test "$code" = "200" || { echo "HTTP $code"; cat hf.json; exit 1; }
+          python3 -c "
+          import base64, json
+          d = json.load(open('hf.json'))
+          assert d['ok'], d
+          assert base64.b64decode(d['pdf_b64'])[:4] == b'%PDF'
+          print('Space image OK:', d['info']['scale'], d['info']['paper'])
+          "
+
+      - name: Stop container
+        if: always()
+        run: docker stop hf || true
