@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  docker:
+    name: Docker image (incl. DWG support)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Building the image is the real test of the LibreDWG stage - it is
+      # what a deploy host will do.
+      - name: Build image
+        run: docker build -t cad2pdf:ci .
+
+      - name: dwg2dxf is present in the image
+        run: docker run --rm cad2pdf:ci dwg2dxf --version
+
+      - name: Start container
+        run: |
+          docker run -d --rm -p 8000:8000 --name cad2pdf cad2pdf:ci
+          for i in $(seq 1 45); do
+            curl -sf http://localhost:8000/healthz >/dev/null && exit 0
+            sleep 2
+          done
+          echo "container never became healthy"; docker logs cad2pdf; exit 1
+
+      - name: Converts a DXF end to end
+        run: |
+          code=$(curl -s -o out.json -w '%{http_code}' \
+            -F file=@examples/sample-floor-plan.dxf \
+            -F scale=1:50 -F paper=A3 \
+            http://localhost:8000/api/convert)
+          test "$code" = "200" || { echo "HTTP $code"; cat out.json; exit 1; }
+          python3 - <<'PY'
+          import base64, json
+          d = json.load(open("out.json"))
+          assert d["ok"], d
+          pdf = base64.b64decode(d["pdf_b64"])
+          assert pdf[:4] == b"%PDF", "not a PDF"
+          info = d["info"]
+          assert info["scale"] == "1:50", info
+          print("OK:", info["scale"], info["paper"], info["orientation"],
+                "| printed", info["plotted_mm"], "mm")
+          PY
+
+      - name: Stop container
+        if: always()
+        run: docker stop cad2pdf || true

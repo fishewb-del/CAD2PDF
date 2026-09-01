@@ -1,5 +1,7 @@
 # cad2pdf
 
+[![CI](https://github.com/fishewb-del/CAD2PDF/actions/workflows/ci.yml/badge.svg)](https://github.com/fishewb-del/CAD2PDF/actions/workflows/ci.yml)
+
 A **web app** that converts CAD drawings (`.dwg` / `.dxf`) into PDFs while
 preserving full geometric accuracy and a correct, labeled print scale —
 the way a real CAD plotter works, not an image-resize tool.
