@@ -68,8 +68,10 @@ still runs and simply asks users to upload DXF instead.
 
 ### Deploying (to get a shareable URL)
 
-**See [DEPLOY.md](DEPLOY.md) for step-by-step instructions**, including a
-free option that keeps DWG support (Hugging Face Spaces, no credit card).
+**Never deployed anything before?** Follow
+[deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md) — a click-by-click
+walkthrough that puts this online for free in about 15 minutes, with no
+terminal and no credit card. [DEPLOY.md](DEPLOY.md) covers the other hosts.
 
 The app has to run on a server — it can't be a static page, since it needs
 Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are

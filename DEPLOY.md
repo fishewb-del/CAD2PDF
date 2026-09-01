@@ -7,6 +7,10 @@ support comes along with it.
 
 ## Option 1 — Hugging Face Spaces (free, no credit card)
 
+> **Non-technical? Follow [deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md)
+> instead** — a click-by-click walkthrough that needs no terminal and no git.
+> The steps below are the shorter version for people comfortable with a shell.
+
 Free CPU Spaces get 2 vCPU / 16 GB RAM, which is plenty, and they don't ask
 for a card. Spaces sleep after a long idle period and wake on the next
 request.
