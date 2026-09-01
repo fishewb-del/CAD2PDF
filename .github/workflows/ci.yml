@@ -60,6 +60,48 @@ jobs:
                 "| printed", info["plotted_mm"], "mm")
           PY
 
+      # The bug this guards: the sample floor plan has no text in it, so a
+      # container with no fonts installed converted it happily while every
+      # real drawing failed with "no fonts available, not even fallback
+      # fonts". This drawing has TEXT, MTEXT, a dimension and a block
+      # attribute, which is what a real plan carries.
+      - name: Converts a drawing containing text
+        run: |
+          code=$(curl -s -o text.json -w '%{http_code}' \
+            -F file=@examples/sample-with-text.dxf \
+            -F "paper=ARCH D" \
+            http://localhost:8000/api/convert)
+          test "$code" = "200" || { echo "HTTP $code"; cat text.json; exit 1; }
+          python3 - <<'PY'
+          import base64, json
+          d = json.load(open("text.json"))
+          assert d["ok"], d
+          assert base64.b64decode(d["pdf_b64"])[:4] == b"%PDF"
+          info = d["info"]
+          assert info["paper"] == "ARCH D", info
+          assert info["units"] == "in", info
+          print("text drawing OK:", info["scale"], info["paper"],
+                info["orientation"], info["drawing_display"])
+          PY
+
+      - name: Preview renders the drawing as zoomable vectors
+        run: |
+          code=$(curl -s -o prev.json -w '%{http_code}' \
+            -F file=@examples/sample-with-text.dxf \
+            http://localhost:8000/api/preview)
+          test "$code" = "200" || { echo "HTTP $code"; cat prev.json; exit 1; }
+          python3 - <<'PY'
+          import json
+          d = json.load(open("prev.json"))
+          assert d["ok"] and d["format"] == "svg", d.get("format")
+          svg = d["svg"]
+          assert "viewBox" in svg, "no viewBox: the viewer could not scale it"
+          assert "<script" not in svg.lower(), "script tag in injected SVG"
+          assert d["aspect"] > 0, d["aspect"]
+          print("preview OK:", len(svg), "bytes,", d["info"]["entity_count"],
+                "entities,", d["info"]["drawing_display"])
+          PY
+
       - name: Deployment dashboard reports the build
         run: |
           curl -sf http://localhost:8000/api/status -o status.json
@@ -71,6 +113,10 @@ jobs:
           # silently dropped out of the build, say so here rather than
           # letting a deploy discover it.
           assert d["features"]["dwg"] is True, d["features"]
+          # Fonts are installed in the image, so text renders. Without this
+          # the dashboard is the only place the failure would show up.
+          assert d["features"]["text_rendering"] is True, d["features"]
+          assert d["fonts"]["available"] > 0, d["fonts"]
           assert d["features"]["password_protected"] is False, d["features"]
           assert d["limits"]["workers"] == 1, d["limits"]
           print("status OK:", d["versions"])
@@ -96,56 +142,3 @@ jobs:
           test "$(code -u ci:wrong http://localhost:8001/)" = "401"
           test "$(code -u ci:ci-secret http://localhost:8001/)" = "200"
           docker stop guarded
-
-  huggingface:
-    name: Hugging Face Space image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # This image clones the app from GitHub, so it verifies the exact
-      # Dockerfile a Space will build from the deploy guide.
-      - name: Build Space image
-        env:
-          # GITHUB_REF_NAME is "<pr number>/merge" on a pull_request event.
-          # That ref is not a branch and cannot be cloned, so this job only
-          # ever worked on push events. Use the PR's head branch instead,
-          # and its repository, so pull requests from forks build too.
-          SPACE_REPO: ${{ github.event.pull_request.head.repo.clone_url || format('{0}/{1}.git', github.server_url, github.repository) }}
-          SPACE_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
-        run: |
-          docker build -f deploy/huggingface/Dockerfile \
-            --build-arg REPO_URL="$SPACE_REPO" \
-            --build-arg REPO_BRANCH="$SPACE_BRANCH" \
-            -t cad2pdf:hf .
-
-      - name: dwg2dxf is present
-        run: docker run --rm cad2pdf:hf dwg2dxf --version
-
-      - name: Start container on the Space port
-        run: |
-          docker run -d --rm -p 8000:8000 --name hf cad2pdf:hf
-          for i in $(seq 1 45); do
-            curl -sf http://localhost:8000/healthz >/dev/null && exit 0
-            sleep 2
-          done
-          echo "container never became healthy"; docker logs hf; exit 1
-
-      - name: Converts a drawing end to end
-        run: |
-          code=$(curl -s -o hf.json -w '%{http_code}' \
-            -F file=@examples/sample-floor-plan.dxf \
-            -F scale=1:50 -F paper=A3 \
-            http://localhost:8000/api/convert)
-          test "$code" = "200" || { echo "HTTP $code"; cat hf.json; exit 1; }
-          python3 -c "
-          import base64, json
-          d = json.load(open('hf.json'))
-          assert d['ok'], d
-          assert base64.b64decode(d['pdf_b64'])[:4] == b'%PDF'
-          print('Space image OK:', d['info']['scale'], d['info']['paper'])
-          "
-
-      - name: Stop container
-        if: always()
-        run: docker stop hf || true

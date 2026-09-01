@@ -148,3 +148,84 @@ def test_missing_geometry_raises(tmp_path):
 
     with pytest.raises(ValueError, match="no visible geometry"):
         convert_dxf_to_pdf(str(dxf_path), str(pdf_path))
+
+
+# ---------------------------------------------------------------------------
+# Sheet sizes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("paper,expect_in", [
+    ("ARCH A", (9, 12)),
+    ("ARCH B", (12, 18)),
+    ("ARCH C", (18, 24)),
+    ("ARCH D", (24, 36)),
+    ("ARCH E1", (30, 42)),
+    ("ARCH E", (36, 48)),
+    ("ANSI C", (17, 22)),
+    ("ANSI D", (22, 34)),
+    ("ANSI E", (34, 44)),
+    ("TABLOID", (11, 17)),
+])
+def test_architectural_sheets_come_out_the_right_physical_size(
+    tmp_path, paper, expect_in
+):
+    """
+    A sheet that is even slightly off is a sheet that will not plot, so
+    check the PDF's actual media box against the nominal inch size.
+    """
+    dxf_path = tmp_path / "rect.dxf"
+    pdf_path = tmp_path / "rect.pdf"
+    _make_dxf(dxf_path, width=1000.0, height=500.0)
+
+    convert_dxf_to_pdf(
+        str(dxf_path), str(pdf_path), paper=paper,
+        orientation="portrait", units="mm",
+    )
+
+    w_mm, h_mm = _page_size_mm(pdf_path)
+    assert w_mm == pytest.approx(expect_in[0] * MM_PER_INCH, abs=0.2)
+    assert h_mm == pytest.approx(expect_in[1] * MM_PER_INCH, abs=0.2)
+
+
+def test_paper_size_is_case_insensitive(tmp_path):
+    dxf_path = tmp_path / "rect.dxf"
+    _make_dxf(dxf_path)
+    for spelling in ("ARCH D", "arch d", "Arch D"):
+        pdf_path = tmp_path / "out.pdf"
+        convert_dxf_to_pdf(str(dxf_path), str(pdf_path), paper=spelling,
+                           orientation="landscape", units="mm")
+        w_mm, _h_mm = _page_size_mm(pdf_path)
+        assert w_mm == pytest.approx(36 * MM_PER_INCH, abs=0.2)
+
+
+@pytest.mark.parametrize("spec,expect_mm", [
+    ("600x900", (600, 900)),
+    ("24x36in", (24 * 25.4, 36 * 25.4)),
+    ("30X42IN", (30 * 25.4, 42 * 25.4)),
+    ("600x900mm", (600, 900)),
+])
+def test_custom_sheet_sizes_accept_mm_and_inches(tmp_path, spec, expect_mm):
+    """
+    A US drawing set is specified in inches. Making someone convert 24x36
+    into millimetres by hand is how you end up with a 3% error.
+    """
+    dxf_path = tmp_path / "rect.dxf"
+    pdf_path = tmp_path / "rect.pdf"
+    _make_dxf(dxf_path)
+
+    convert_dxf_to_pdf(str(dxf_path), str(pdf_path), paper=spec,
+                       orientation="portrait", units="mm")
+
+    w_mm, h_mm = _page_size_mm(pdf_path)
+    assert w_mm == pytest.approx(min(expect_mm), abs=0.2)
+    assert h_mm == pytest.approx(max(expect_mm), abs=0.2)
+
+
+def test_unknown_paper_size_names_the_alternatives(tmp_path):
+    dxf_path = tmp_path / "rect.dxf"
+    _make_dxf(dxf_path)
+    with pytest.raises(ValueError) as excinfo:
+        convert_dxf_to_pdf(str(dxf_path), str(tmp_path / "o.pdf"),
+                           paper="ARCH Z", units="mm")
+    message = str(excinfo.value)
+    assert "ARCH D" in message and "24x36in" in message

@@ -17,6 +17,7 @@ import os
 import tempfile
 import traceback
 
+from ezdxf.fonts.font_manager import FontNotFoundError
 from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
@@ -34,10 +35,19 @@ from cad2pdf.converter import (
     STANDARD_SCALES,
     UNITS_TO_MM,
     convert_dxf_to_pdf,
+    paper_choices,
+    render_preview,
 )
 from cad2pdf.dwg import DwgConversionError, convert_dwg_to_dxf, dwg_available
+from cad2pdf.fontsetup import fallback_font_name, font_count, has_usable_font
 
 MAX_UPLOAD_MB = int(os.environ.get("CAD2PDF_MAX_UPLOAD_MB", "32"))
+
+# Sheet size pre-selected in the UI. A US contractor plots Arch D far more
+# often than A4, so let deployments say which one they live on.
+DEFAULT_PAPER = os.environ.get("CAD2PDF_DEFAULT_PAPER", "ARCH D").strip().upper()
+if DEFAULT_PAPER not in PAPER_SIZES_MM:
+    DEFAULT_PAPER = "ARCH D"
 
 # Optional password gate. A free Render service has a public URL that anyone
 # who learns it can use, which is fine for a demo and not fine for client
@@ -49,6 +59,13 @@ AUTH_PASSWORD = os.environ.get("CAD2PDF_PASSWORD", "").strip()
 # Render polls the health check without credentials, so it can never be
 # behind the gate - a 401 there would fail every deploy.
 _UNPROTECTED_ENDPOINTS = {"healthz"}
+
+_NO_FONTS_MESSAGE = (
+    "This drawing contains text, but no fonts are installed on this server, "
+    "so the text cannot be drawn. This is a server configuration problem, "
+    "not a problem with your file - see /status for what the server has "
+    "available."
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -86,7 +103,8 @@ def require_password():
 def index():
     return render_template(
         "index.html",
-        paper_sizes=sorted(PAPER_SIZES_MM),
+        paper_groups=paper_choices(),
+        default_paper=DEFAULT_PAPER,
         units=sorted(UNITS_TO_MM),
         standard_scales=STANDARD_SCALES,
         max_upload_mb=MAX_UPLOAD_MB,
@@ -116,7 +134,12 @@ def _status_payload() -> dict:
         "features": {
             "dxf": True,
             "dwg": dwg_available(),
+            "text_rendering": has_usable_font(),
             "password_protected": auth_enabled(),
+        },
+        "fonts": {
+            "available": font_count(),
+            "fallback": fallback_font_name(),
         },
         "limits": {
             "max_upload_mb": MAX_UPLOAD_MB,
@@ -183,37 +206,122 @@ def _form_float(name: str, default: float, minimum: float, maximum: float) -> fl
     return value
 
 
-@app.post("/api/convert")
-def api_convert():
-    upload = request.files.get("file")
+class UploadRejected(Exception):
+    """An upload we can describe a fix for, rather than a crash."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def _check_upload(upload):
+    """Validate the uploaded file. Returns (filename, stem, extension)."""
     if upload is None or not upload.filename:
-        return jsonify(ok=False, error="Please choose a DXF file to convert."), 400
+        raise UploadRejected("Please choose a DXF file to convert.")
 
     filename = secure_filename(upload.filename)
     stem, ext = os.path.splitext(filename)
     ext = ext.lower()
 
     if ext == ".dwg" and not dwg_available():
-        return jsonify(
-            ok=False,
-            error=(
-                "DWG support isn't installed on this server. Convert the "
-                "file to DXF first (free ODA File Converter, or 'Save As -> "
-                "DXF' in AutoCAD / BricsCAD / LibreCAD), then upload the "
-                "DXF. Geometry and scale are preserved either way."
-            ),
-        ), 400
+        raise UploadRejected(
+            "DWG support isn't installed on this server. Convert the "
+            "file to DXF first (free ODA File Converter, or 'Save As -> "
+            "DXF' in AutoCAD / BricsCAD / LibreCAD), then upload the "
+            "DXF. Geometry and scale are preserved either way."
+        )
     if ext not in (".dxf", ".dwg"):
-        return jsonify(
-            ok=False,
-            error=(
-                f"Unsupported file type '{ext or 'unknown'}'. "
-                f"Please upload a .dxf or .dwg file."
+        raise UploadRejected(
+            f"Unsupported file type '{ext or 'unknown'}'. "
+            f"Please upload a .dxf or .dwg file."
+        )
+    return filename, stem, ext
+
+
+def _stage_dxf(upload, ext: str, workdir: str) -> str:
+    """
+    Put the upload on disk as a DXF, converting from DWG if needed.
+
+    Everything lands in a per-request temp dir the caller deletes, so no
+    uploaded drawing is ever retained on the server.
+    """
+    dxf_path = os.path.join(workdir, "input.dxf")
+    if ext == ".dwg":
+        dwg_path = os.path.join(workdir, "input.dwg")
+        upload.save(dwg_path)
+        try:
+            convert_dwg_to_dxf(dwg_path, dxf_path)
+        except DwgConversionError as exc:
+            raise UploadRejected(str(exc))
+    else:
+        upload.save(dxf_path)
+    return dxf_path
+
+
+@app.errorhandler(UploadRejected)
+def upload_rejected(exc: UploadRejected):
+    return jsonify(ok=False, error=str(exc)), exc.status
+
+
+@app.post("/api/preview")
+def api_preview():
+    """
+    Render the uploaded drawing for on-screen viewing, before conversion.
+
+    Deliberately separate from /api/convert: this shows the drawing itself,
+    not a sheet, so you can pan and zoom around it and confirm it is the
+    right file with the right geometry before picking a scale.
+    """
+    upload = request.files.get("file")
+    _filename, _stem, ext = _check_upload(upload)
+
+    with tempfile.TemporaryDirectory(prefix="cad2pdf-preview-") as workdir:
+        dxf_path = _stage_dxf(upload, ext, workdir)
+        try:
+            preview = render_preview(
+                dxf_path,
+                units=(request.form.get("units") or "auto").strip(),
+            )
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        except FontNotFoundError:
+            return jsonify(ok=False, error=_NO_FONTS_MESSAGE), 500
+        except Exception as exc:  # noqa: BLE001 - surface a clean message
+            app.logger.error("preview failed: %s", traceback.format_exc())
+            return jsonify(
+                ok=False, error=f"Could not read this drawing: {exc}"
+            ), 400
+
+    payload = {
+        "ok": True,
+        "format": preview.format,
+        "aspect": round(preview.aspect, 6),
+        "note": preview.note,
+        "info": {
+            "units": preview.drawing_units,
+            "units_autodetected": preview.units_autodetected,
+            "drawing_mm": [round(v, 1) for v in preview.drawing_extents_mm],
+            "drawing_display": " × ".join(
+                _format_extent(v, preview.drawing_units)
+                for v in preview.drawing_extents_mm
             ),
-        ), 400
+            "entity_count": preview.entity_count,
+        },
+    }
+    if preview.format == "svg":
+        payload["svg"] = preview.svg
+    else:
+        payload["png_b64"] = base64.b64encode(preview.png_bytes).decode("ascii")
+    return jsonify(payload)
+
+
+@app.post("/api/convert")
+def api_convert():
+    upload = request.files.get("file")
+    filename, stem, ext = _check_upload(upload)
 
     scale = (request.form.get("scale") or "").strip() or None
-    paper = (request.form.get("paper") or "A4").strip()
+    paper = (request.form.get("paper") or DEFAULT_PAPER).strip()
     orientation = (request.form.get("orientation") or "auto").strip()
     units = (request.form.get("units") or "auto").strip()
     show_label = request.form.get("show_label", "true").lower() != "false"
@@ -227,19 +335,9 @@ def api_convert():
     # Everything lives in a per-request temp dir that is removed on exit,
     # so no uploaded drawing or generated PDF is retained on the server.
     with tempfile.TemporaryDirectory(prefix="cad2pdf-") as workdir:
-        dxf_path = os.path.join(workdir, "input.dxf")
+        dxf_path = _stage_dxf(upload, ext, workdir)
         pdf_path = os.path.join(workdir, "output.pdf")
         png_path = os.path.join(workdir, "preview.png")
-
-        if ext == ".dwg":
-            dwg_path = os.path.join(workdir, "input.dwg")
-            upload.save(dwg_path)
-            try:
-                convert_dwg_to_dxf(dwg_path, dxf_path)
-            except DwgConversionError as exc:
-                return jsonify(ok=False, error=str(exc)), 400
-        else:
-            upload.save(dxf_path)
 
         try:
             result = convert_dxf_to_pdf(
@@ -261,6 +359,12 @@ def api_convert():
             # Expected, user-fixable problems (bad scale, drawing too big
             # for the page, empty drawing, unknown paper size).
             return jsonify(ok=False, error=str(exc)), 400
+        except FontNotFoundError as exc:
+            # The drawing is fine; the server has no font to draw its text
+            # with. Saying "could not read this DXF file" sends people off
+            # re-exporting a file that was never the problem.
+            app.logger.error("no font available: %s", exc)
+            return jsonify(ok=False, error=_NO_FONTS_MESSAGE), 500
         except Exception as exc:  # noqa: BLE001 - surface a clean message
             app.logger.error("conversion failed: %s", traceback.format_exc())
             return jsonify(

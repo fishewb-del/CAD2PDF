@@ -41,6 +41,17 @@ WORKDIR /app
 
 COPY --from=dwg-builder /usr/local/bin/dwg2dxf /usr/local/bin/dwg2dxf
 
+# Fonts. python:3.11-slim ships none at all, and ezdxf needs a real TrueType
+# font to draw TEXT, MTEXT, dimensions and block attributes - without one,
+# any drawing containing text fails with "no fonts available, not even
+# fallback fonts". Liberation is the important one: it is metric-compatible
+# with Arial, Helvetica, Times New Roman and Courier New, which is what CAD
+# text styles overwhelmingly ask for, so text lands at the width the drawing
+# expects. DejaVu covers everything else. Together about 10 MB.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        fonts-liberation fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # Run as a non-root user; conversions only ever touch per-request temp dirs.
 RUN useradd --create-home --uid 10001 appuser
 
@@ -55,7 +66,9 @@ USER appuser
 # Build matplotlib's font cache now, at image build time. Otherwise the
 # first request after every cold start pays for it - and on Render's free
 # plan the instance sleeps when idle, so "cold start" means most mornings.
-RUN python -c "import matplotlib.pyplot"
+RUN python -c "import matplotlib.pyplot" \
+    && python -c "from cad2pdf.fontsetup import ensure_fonts, font_count; \
+                  ensure_fonts(); print('fonts available:', font_count())"
 
 EXPOSE 8000
 

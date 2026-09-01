@@ -70,10 +70,8 @@ still runs and simply asks users to upload DXF instead.
 
 **Never deployed anything before?** Follow [RENDER.md](RENDER.md), a
 click-by-click walkthrough that puts this online for free on Render in about
-20 minutes, with no terminal and no credit card. Hugging Face Spaces is
-covered the same way in
-[deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md), and
-[DEPLOY.md](DEPLOY.md) summarises every host.
+20 minutes, with no terminal and no credit card. [DEPLOY.md](DEPLOY.md)
+covers the other hosts.
 
 The app has to run on a server — it can't be a static page, since it needs
 Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are
@@ -106,6 +104,7 @@ cached afterwards.
 |---|---|---|
 | `PORT` | Port to listen on | `8000` (Docker) / `5000` (`python app.py`) |
 | `CAD2PDF_MAX_UPLOAD_MB` | Upload size limit | `32` |
+| `CAD2PDF_DEFAULT_PAPER` | Sheet size pre-selected in the UI | `ARCH D` |
 | `CAD2PDF_DWG2DXF` | Path to the `dwg2dxf` binary | `dwg2dxf` (on `PATH`) |
 | `CAD2PDF_DWG_TIMEOUT` | Max seconds for a DWG→DXF conversion | `120` |
 | `WEB_CONCURRENCY` | Gunicorn worker processes | `1` |
@@ -130,13 +129,60 @@ unchanged.
 | Path | What it is |
 |---|---|
 | `/healthz` | Liveness probe. Cheap, always open, returns `{"status": "ok"}` |
-| `/status` | Deployment dashboard: which GitHub commit is live, whether DWG support built, current limits and versions |
+| `/status` | Deployment dashboard: which GitHub commit is live, whether DWG support and fonts built, current limits and versions |
 | `/api/status` | The same information as JSON |
+| `/api/preview` | POST a drawing, get back zoomable SVG (or a raster fallback) for the viewer |
 
 On Render, `/status` reads the `RENDER_GIT_*` variables Render injects at
 build time, so it links straight back to the deployed commit on GitHub. On
 any other Docker host, pass `CAD2PDF_GIT_REPO`, `CAD2PDF_GIT_BRANCH` and
 `CAD2PDF_GIT_COMMIT` to get the same links.
+
+## Drawing viewer
+
+Pick a file and the drawing appears before you convert anything: drag to
+pan, scroll or pinch to zoom, double-click to zoom in, **Fit** to reset.
+The preview is vector, so it stays sharp all the way down to dimension
+text, and it shows the *drawing* rather than the plotted sheet - no paper,
+no margin, no scale applied. It is there to answer "is this the right file
+and did the geometry come across" before you commit to a conversion.
+
+Drawings dense enough to make a multi-megabyte SVG fall back to a
+high-resolution raster image, which pans and zooms identically and only
+goes soft at extreme magnification. The PDF is full vector either way.
+
+## Sheet sizes
+
+Architectural and ANSI sheets are first-class, since that is what a US
+drawing set is plotted on:
+
+| Group | Sizes |
+|---|---|
+| Architectural | ARCH A (9×12), B (12×18), C (18×24), **D (24×36)**, E1 (30×42), E (36×48) |
+| ANSI / US office | LETTER, LEGAL, TABLOID (11×17), ANSI C (17×22), D (22×34), E (34×44) |
+| ISO A series | A4, A3, A2, A1, A0 |
+
+All dimensions in inches except the ISO series. Custom sheets work too,
+in either unit: `600x900` and `600x900mm` are millimetres, `24x36in` is
+inches.
+
+The UI pre-selects `ARCH D`; set `CAD2PDF_DEFAULT_PAPER` to change it.
+
+## Fonts
+
+ezdxf needs a real TrueType font to draw TEXT, MTEXT, dimensions and block
+attributes. A slim container image ships none, and without one every
+drawing containing text fails with *"no fonts available, not even fallback
+fonts"* - while a drawing without text converts perfectly, which makes the
+problem easy to miss.
+
+The Docker image installs `fonts-liberation` (metric-compatible with Arial,
+Helvetica, Times New Roman and Courier New, which is what CAD text styles
+ask for) and `fonts-dejavu-core`. On top of that, `cad2pdf.fontsetup`
+registers the DejaVu fonts bundled inside matplotlib whenever the host has
+none of its own, so a bare `pip install` on a fontless machine still works.
+
+`/status` reports how many fonts the running instance can see.
 
 ## DWG support
 

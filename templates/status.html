@@ -78,6 +78,18 @@
         DXF. This means the image was built without LibreDWG.
       </li>
       {% endif %}
+      {% if features.text_rendering %}
+      <li class="ok">
+        Text rendering: available ({{ fonts.available }} fonts, falling back
+        to {{ fonts.fallback }})
+      </li>
+      {% else %}
+      <li class="warn">
+        Text rendering: no fonts installed. Any drawing containing text,
+        dimensions or block attributes will fail to convert. Install
+        fonts-liberation and fonts-dejavu-core in the image.
+      </li>
+      {% endif %}
       {% if features.password_protected %}
       <li class="ok">Password gate: on (CAD2PDF_PASSWORD is set)</li>
       {% else %}

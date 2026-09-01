@@ -29,7 +29,7 @@ _STARTED_AT = time.time()
 
 @dataclass(frozen=True)
 class BuildInfo:
-    host: str                       # "Render", "Hugging Face Space", "local", ...
+    host: str                       # "Render", "Fly.io", "local", ...
     service_name: Optional[str]
     region: Optional[str]
     instance_id: Optional[str]
@@ -80,8 +80,6 @@ def _local_git_branch() -> Optional[str]:
 def get_build_info() -> BuildInfo:
     if _env("RENDER"):
         host = "Render"
-    elif _env("SPACE_ID"):
-        host = "Hugging Face Space"
     elif _env("FLY_APP_NAME"):
         host = "Fly.io"
     else:
@@ -107,8 +105,7 @@ def get_build_info() -> BuildInfo:
 
     return BuildInfo(
         host=host,
-        service_name=_env("RENDER_SERVICE_NAME") or _env("SPACE_ID")
-        or _env("FLY_APP_NAME"),
+        service_name=_env("RENDER_SERVICE_NAME") or _env("FLY_APP_NAME"),
         region=_env("RENDER_REGION") or _env("FLY_REGION"),
         instance_id=_env("RENDER_INSTANCE_ID") or _env("FLY_ALLOC_ID"),
         repo_slug=repo_slug,

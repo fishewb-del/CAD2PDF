@@ -102,6 +102,7 @@ There is a manual path that produces the same result:
    | `CAD2PDF_MAX_UPLOAD_MB` | `16` |
    | `CAD2PDF_DWG_TIMEOUT` | `75` |
    | `GUNICORN_TIMEOUT` | `120` |
+   | `CAD2PDF_DEFAULT_PAPER` | `ARCH D` |
 
    Click **Save Changes**. The service redeploys itself.
 
@@ -151,12 +152,16 @@ That link is your app. Bookmark it. Send it to whoever needs it.
 ## Step 6. Prove it actually works
 
 1. Download a test drawing: on the GitHub repo, open
-   `examples/sample-floor-plan.dxf` and click the **Download raw file**
+   `examples/sample-with-text.dxf` and click the **Download raw file**
    button (the download arrow, top right of the file view).
 2. Back on your app, drag that file onto the drop zone.
-3. Set **Scale** to `1:50` and **Paper size** to `A3`.
-4. Click **Convert to PDF**, then **Download PDF**.
-5. Open the PDF. The footer prints the scale it was drawn at. Print it at
+3. **The drawing appears in a viewer.** Drag to pan, scroll to zoom,
+   double-click to zoom in, **Fit** to reset. Zoom right in on the text: it
+   stays sharp, because the preview is vector. This is the drawing itself,
+   not the plotted sheet.
+4. Leave **Paper size** on `ARCH D` and **Scale** on "Fit to page".
+5. Click **Convert to PDF**, then **Download PDF**.
+6. Open the PDF. The footer prints the scale it was drawn at. Print it at
    100 percent (not "fit to page") and a scale rule will read true off it.
 
 Then try one of your own drawings. Start with a DXF if you have one, since
@@ -177,6 +182,8 @@ It tells you, in plain language:
 - which **GitHub commit** is running right now, as a clickable link back to
   GitHub
 - whether **DWG support** made it into the build
+- whether **fonts** are installed, which decides whether drawings
+  containing text can be converted at all
 - whether the **password gate** is on
 - the upload limit and timeouts currently in force
 - how long this instance has been awake (a small number usually just means
@@ -292,6 +299,8 @@ instance with more than 512 MB.
 | "This DWG file took too long to convert" | 0.1 CPU is too slow for that file | Export DXF from your CAD program and upload that, or upgrade |
 | "This DWG file could not be read" | An unusual or very new DWG revision | In your CAD program, **Save As → DXF**, upload the DXF. Scale is preserved |
 | `/status` shows **DWG conversion: not available** | The image was built without LibreDWG | Confirm the service runtime is **Docker**, not Python, then rebuild |
+| "no fonts available, not even fallback fonts" | The server has no fonts, so text cannot be drawn | Fixed in the image. If you see it, you are on an old build: **Manual Deploy → Clear build cache & deploy**, then check `/status` says text rendering is available |
+| The drawing preview never appears | The preview call failed; converting may still work | Try converting anyway. If a very large drawing, the free instance may have run out of memory, see Step 11 |
 | `/status` shows an old commit | The deploy has not finished, or failed | **Events** tab tells you which |
 | Repository not listed when connecting | Render was not granted access to it | **Configure account** on the connect screen, tick CAD2PDF on GitHub |
 
@@ -310,5 +319,5 @@ For the record, in case someone technical asks later:
   and reviewable rather than a pile of clicks somebody has to remember.
 - Uploaded drawings are never written to persistent storage. Each conversion
   runs in a temporary directory that is deleted when the response is sent.
-- Other deployment options (Hugging Face Spaces, Fly.io, plain Docker) are in
+- Other deployment options (Fly.io, any plain Docker host) are in
   [DEPLOY.md](DEPLOY.md).
