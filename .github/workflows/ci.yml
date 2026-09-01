@@ -60,6 +60,48 @@ jobs:
                 "| printed", info["plotted_mm"], "mm")
           PY
 
+      # The bug this guards: the sample floor plan has no text in it, so a
+      # container with no fonts installed converted it happily while every
+      # real drawing failed with "no fonts available, not even fallback
+      # fonts". This drawing has TEXT, MTEXT, a dimension and a block
+      # attribute, which is what a real plan carries.
+      - name: Converts a drawing containing text
+        run: |
+          code=$(curl -s -o text.json -w '%{http_code}' \
+            -F file=@examples/sample-with-text.dxf \
+            -F "paper=ARCH D" \
+            http://localhost:8000/api/convert)
+          test "$code" = "200" || { echo "HTTP $code"; cat text.json; exit 1; }
+          python3 - <<'PY'
+          import base64, json
+          d = json.load(open("text.json"))
+          assert d["ok"], d
+          assert base64.b64decode(d["pdf_b64"])[:4] == b"%PDF"
+          info = d["info"]
+          assert info["paper"] == "ARCH D", info
+          assert info["units"] == "in", info
+          print("text drawing OK:", info["scale"], info["paper"],
+                info["orientation"], info["drawing_display"])
+          PY
+
+      - name: Preview renders the drawing as zoomable vectors
+        run: |
+          code=$(curl -s -o prev.json -w '%{http_code}' \
+            -F file=@examples/sample-with-text.dxf \
+            http://localhost:8000/api/preview)
+          test "$code" = "200" || { echo "HTTP $code"; cat prev.json; exit 1; }
+          python3 - <<'PY'
+          import json
+          d = json.load(open("prev.json"))
+          assert d["ok"] and d["format"] == "svg", d.get("format")
+          svg = d["svg"]
+          assert "viewBox" in svg, "no viewBox: the viewer could not scale it"
+          assert "<script" not in svg.lower(), "script tag in injected SVG"
+          assert d["aspect"] > 0, d["aspect"]
+          print("preview OK:", len(svg), "bytes,", d["info"]["entity_count"],
+                "entities,", d["info"]["drawing_display"])
+          PY
+
       - name: Deployment dashboard reports the build
         run: |
           curl -sf http://localhost:8000/api/status -o status.json
@@ -71,6 +113,10 @@ jobs:
           # silently dropped out of the build, say so here rather than
           # letting a deploy discover it.
           assert d["features"]["dwg"] is True, d["features"]
+          # Fonts are installed in the image, so text renders. Without this
+          # the dashboard is the only place the failure would show up.
+          assert d["features"]["text_rendering"] is True, d["features"]
+          assert d["fonts"]["available"] > 0, d["fonts"]
           assert d["features"]["password_protected"] is False, d["features"]
           assert d["limits"]["workers"] == 1, d["limits"]
           print("status OK:", d["versions"])

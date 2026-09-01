@@ -236,3 +236,82 @@ button[type="submit"]:not(:disabled):hover { filter: brightness(1.08); }
   text-align: center;
 }
 .footer-link a { color: var(--muted); }
+
+/* ---- drawing viewer ---- */
+#viewer-panel { margin-top: 1.25rem; }
+
+.viewer-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .6rem;
+}
+.viewer-head h2 { margin: 0; font-size: .95rem; }
+
+.viewer-tools { display: flex; align-items: center; gap: .35rem; }
+.viewer-tools button {
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+  min-width: 30px;
+  padding: .38rem .5rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+.viewer-tools button:hover { border-color: var(--accent); color: var(--accent); }
+.viewer-tools button.wide { min-width: 46px; }
+#zoom-level {
+  min-width: 4.2em;
+  text-align: center;
+  font-size: .8rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#viewer {
+  position: relative;
+  overflow: hidden;
+  height: min(62vh, 520px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  cursor: grab;
+  touch-action: none;          /* we handle pan and pinch ourselves */
+  overscroll-behavior: contain;
+}
+#viewer:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#viewer.grabbing { cursor: grabbing; }
+#viewer.loading { opacity: .55; }
+
+#viewer-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+#viewer-stage > svg,
+#viewer-stage > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The drawing is rendered on white; keep it white in dark mode too
+     rather than inverting a set of drafting colours. */
+  background: #ffffff;
+}
+
+.viewer-hint { color: var(--muted); font-size: .8rem; margin: .5rem 0 0; }
+.viewer-note {
+  margin: .6rem 0 0;
+  padding: .6rem .8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: .82rem;
+}

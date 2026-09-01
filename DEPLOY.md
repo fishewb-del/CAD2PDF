@@ -98,6 +98,7 @@ directory that is deleted when the response is sent.
 |---|---|---|
 | `PORT` | Port to listen on | `8000` |
 | `CAD2PDF_MAX_UPLOAD_MB` | Upload size limit | `32` |
+| `CAD2PDF_DEFAULT_PAPER` | Sheet size pre-selected in the UI | `ARCH D` |
 | `CAD2PDF_DWG2DXF` | Path to the `dwg2dxf` binary | `dwg2dxf` on `PATH` |
 | `CAD2PDF_DWG_TIMEOUT` | Max seconds for a DWG→DXF conversion | `120` |
 | `WEB_CONCURRENCY` | Gunicorn worker processes | `1` |

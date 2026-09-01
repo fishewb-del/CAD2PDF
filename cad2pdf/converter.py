@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import io
 import os
+import re
 from typing import Optional, Tuple
 
 import ezdxf
@@ -41,23 +43,86 @@ matplotlib.use("Agg")
 # conversion fully self-contained.
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_pdf import FigureCanvasPdf
+from matplotlib.backends.backend_svg import FigureCanvasSVG
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+from .fontsetup import ensure_fonts
+
+# ezdxf needs a real TrueType font to draw TEXT/MTEXT/dimensions, and a slim
+# container image has no system fonts at all. Do this once, at import, so a
+# drawing with text never dies with "no fonts available".
+ensure_fonts()
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-# Paper sizes in millimetres, portrait (width, height).
+def _inches(w: float, h: float) -> Tuple[float, float]:
+    """Paper size given in inches, stored in mm (portrait)."""
+    return (round(w * 25.4, 1), round(h * 25.4, 1))
+
+
+# Paper sizes in millimetres, portrait (width, height), grouped the way a
+# drawing set is actually specified. The groups drive the order and the
+# optgroups in the web UI; PAPER_SIZES_MM below is the flat lookup.
+PAPER_GROUPS = (
+    ("Architectural (US)", {
+        "ARCH A": _inches(9, 12),
+        "ARCH B": _inches(12, 18),
+        "ARCH C": _inches(18, 24),
+        "ARCH D": _inches(24, 36),
+        "ARCH E1": _inches(30, 42),
+        "ARCH E": _inches(36, 48),
+    }),
+    ("ANSI / US office", {
+        "LETTER": _inches(8.5, 11),
+        "LEGAL": _inches(8.5, 14),
+        "TABLOID": _inches(11, 17),
+        "ANSI C": _inches(17, 22),
+        "ANSI D": _inches(22, 34),
+        "ANSI E": _inches(34, 44),
+    }),
+    ("ISO A series", {
+        "A4": (210.0, 297.0),
+        "A3": (297.0, 420.0),
+        "A2": (420.0, 594.0),
+        "A1": (594.0, 841.0),
+        "A0": (841.0, 1189.0),
+    }),
+)
+
+# Flat name -> (width_mm, height_mm) lookup.
 PAPER_SIZES_MM = {
-    "A0": (841.0, 1189.0),
-    "A1": (594.0, 841.0),
-    "A2": (420.0, 594.0),
-    "A3": (297.0, 420.0),
-    "A4": (210.0, 297.0),
-    "LETTER": (215.9, 279.4),
-    "LEGAL": (215.9, 355.6),
-    "TABLOID": (279.4, 431.8),
+    name: size
+    for _group, sizes in PAPER_GROUPS
+    for name, size in sizes.items()
 }
+
+# The unit each group is quoted in. An architect asks for a 24x36, not a
+# 610x914, and vice versa for an ISO sheet.
+_GROUP_UNITS = {"ISO A series": "mm"}
+
+
+def paper_choices():
+    """
+    Sheet sizes for a grouped picker: ((group, ((value, label), ...)), ...).
+
+    Labels are quoted in the unit that group is actually specified in, and
+    kept short enough to survive a narrow <select>.
+    """
+    groups = []
+    for group_name, sizes in PAPER_GROUPS:
+        unit = _GROUP_UNITS.get(group_name, "in")
+        options = []
+        for name, (w_mm, h_mm) in sizes.items():
+            if unit == "in":
+                label = f"{name} · {w_mm / MM_PER_INCH:g}×{h_mm / MM_PER_INCH:g} in"
+            else:
+                label = f"{name} · {w_mm:g}×{h_mm:g} mm"
+            options.append((name, label))
+        groups.append((group_name, tuple(options)))
+    return tuple(groups)
 
 # Drawing-unit -> millimetre conversion factors.
 UNITS_TO_MM = {
@@ -68,11 +133,11 @@ UNITS_TO_MM = {
     "ft": 304.8,
 }
 
+MM_PER_INCH = 25.4
+
 # Standard drafting scale denominators (1:N), ascending.
 STANDARD_SCALES = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250,
                     500, 750, 1000, 1250, 2500, 5000, 10000]
-
-MM_PER_INCH = 25.4
 
 # DXF $INSUNITS header codes -> our unit names. Codes we can't represent
 # (miles, angstroms, ...) are intentionally absent and fall back to the
@@ -135,19 +200,49 @@ def _parse_scale(scale: Optional[str]) -> Optional[float]:
     return value
 
 
+def _parse_custom_paper(original: str, key: str) -> Tuple[float, float]:
+    """
+    Parse a custom sheet size: "500x700" (mm), "600x900mm", "24x36in".
+
+    Inches are supported because a US drawing set is specified in inches;
+    asking someone to convert 24x36 into millimetres by hand is how you get
+    a sheet that is 3% wrong.
+    """
+    text = key.lower().replace(" ", "")
+    unit_mm = 1.0
+    for suffix, factor in (("mm", 1.0), ("in", MM_PER_INCH), ('"', MM_PER_INCH)):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            unit_mm = factor
+            break
+
+    if "x" not in text:
+        raise ValueError(
+            f"Unknown paper size '{original}'. Use one of "
+            f"{sorted(PAPER_SIZES_MM)}, or a custom size like '600x900' "
+            f"(mm) or '24x36in'."
+        )
+    w_str, h_str = text.split("x", 1)
+    try:
+        w, h = float(w_str) * unit_mm, float(h_str) * unit_mm
+    except ValueError:
+        raise ValueError(
+            f"Could not read the custom paper size '{original}'. Expected "
+            f"something like '600x900' (mm) or '24x36in'."
+        )
+    if w <= 0 or h <= 0:
+        raise ValueError(f"Paper size '{original}' must be positive")
+    return w, h
+
+
 def _get_paper_mm(paper: str, orientation: str) -> Tuple[float, float]:
     key = paper.strip().upper()
     if key in PAPER_SIZES_MM:
         w, h = PAPER_SIZES_MM[key]
     else:
-        # Custom "WIDTHxHEIGHT" in mm, e.g. "500x700"
-        if "x" not in key.lower():
-            raise ValueError(
-                f"Unknown paper size '{paper}'. Use one of "
-                f"{sorted(PAPER_SIZES_MM)} or 'WIDTHxHEIGHT' in mm."
-            )
-        w_str, h_str = key.lower().split("x", 1)
-        w, h = float(w_str), float(h_str)
+        # Custom size: "WIDTHxHEIGHT", in mm by default, or in inches with
+        # an "in" suffix - "500x700", "600x900mm", "24x36in".
+        w, h = _parse_custom_paper(paper, key)
 
     if orientation == "landscape":
         w, h = max(w, h), min(w, h)
@@ -388,4 +483,195 @@ def convert_dxf_to_pdf(
         fit_mode=fit_mode,
         units_autodetected=units_autodetected,
         preview_path=preview_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# On-screen preview
+# ---------------------------------------------------------------------------
+
+# matplotlib does not emit scripts or event handlers in its SVG output, and
+# it renders text as glyph outlines rather than as markup, so the strings
+# inside a drawing never reach the DOM as text. This strips the dangerous
+# constructs anyway: the SVG is injected into the page, and a preview is not
+# worth an XSS hole if a future matplotlib changes what it emits.
+_SCRIPT_RE = re.compile(r"<script\b.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+_FOREIGN_RE = re.compile(
+    r"<foreignObject\b.*?</foreignObject\s*>", re.IGNORECASE | re.DOTALL
+)
+_EVENT_ATTR_RE = re.compile(r"""\son[a-z]+\s*=\s*("[^"]*"|'[^']*')""",
+                            re.IGNORECASE)
+_SVG_OPEN_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+
+
+def _sanitize_svg(svg: str) -> str:
+    svg = _SCRIPT_RE.sub("", svg)
+    svg = _FOREIGN_RE.sub("", svg)
+    return _EVENT_ATTR_RE.sub("", svg)
+
+
+def _make_svg_responsive(svg: str) -> str:
+    """
+    Drop the fixed width/height so the SVG fills its container.
+
+    matplotlib writes width="720pt" height="540pt" alongside a viewBox. Left
+    alone that pins the drawing to one size; removing them lets CSS size it
+    while the viewBox keeps the aspect ratio and the coordinate system.
+    """
+    match = _SVG_OPEN_RE.search(svg)
+    if not match:
+        return svg
+    tag = match.group(0)
+    cleaned = re.sub(r'\s(width|height)="[^"]*"', "", tag, flags=re.IGNORECASE)
+    cleaned = cleaned.replace(
+        "<svg", '<svg preserveAspectRatio="xMidYMid meet"', 1
+    )
+    return svg[: match.start()] + cleaned + svg[match.end():]
+
+
+@dataclasses.dataclass
+class PreviewResult:
+    drawing_units: str
+    units_autodetected: bool
+    drawing_extents_mm: Tuple[float, float]
+    entity_count: int
+    format: str                      # "svg" or "png"
+    aspect: float = 1.0              # rendered width / height
+    svg: Optional[str] = None
+    png_bytes: Optional[bytes] = None
+    note: Optional[str] = None
+
+
+def _build_preview_figure(doc, size_in: float, line_width_scale: float):
+    """Draw model space onto a figure sized to the drawing's own aspect."""
+    xmin, ymin, xmax, ymax = _drawing_extents(doc)
+    width_units = xmax - xmin
+    height_units = ymax - ymin
+
+    aspect = height_units / width_units if width_units else 1.0
+    if aspect >= 1.0:
+        fig_h_in, fig_w_in = size_in, size_in / aspect
+    else:
+        fig_w_in, fig_h_in = size_in, size_in * aspect
+
+    fig = Figure(figsize=(fig_w_in, fig_h_in), dpi=100)
+    fig.patch.set_facecolor("white")
+
+    ax = fig.add_axes((0.0, 0.0, 1.0, 1.0))
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+
+    msp = doc.modelspace()
+    ctx = RenderContext(doc)
+    layout_props = LayoutProperties.from_layout(msp)
+    layout_props.set_colors(bg="#FFFFFF")
+
+    backend = MatplotlibBackend(ax, adjust_figure=False)
+    frontend = Frontend(ctx, backend)
+    if line_width_scale != 1.0:
+        try:
+            backend.line_width_scaling = line_width_scale
+        except AttributeError:
+            pass
+    frontend.draw_layout(msp, finalize=True, layout_properties=layout_props)
+
+    # finalize() re-enables autoscale, which would drift the limits away
+    # from the true extents. Pin them back.
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.autoscale(False)
+
+    return fig, (width_units, height_units), (fig_w_in, fig_h_in)
+
+
+def render_preview(
+    input_path: str,
+    size_in: float = 11.0,
+    line_width_scale: float = 1.0,
+    units: str = "auto",
+    max_svg_bytes: int = 6 * 1024 * 1024,
+    png_max_px: int = 2200,
+) -> PreviewResult:
+    """
+    Render model space for on-screen viewing, panning and zooming.
+
+    This is deliberately NOT the plotted sheet: no paper, no margin, no
+    scale applied. It is the drawing itself, so you can check the file is
+    the right one and the geometry came across before committing to a
+    conversion.
+
+    SVG is preferred because it stays sharp no matter how far you zoom in,
+    right down to dimension text. A drawing dense enough to blow past
+    `max_svg_bytes` would also make the browser crawl, so those fall back
+    to a high-resolution raster image, which pans and zooms the same way
+    and just goes soft at extreme magnification.
+
+    Args:
+        input_path: path to a .dxf file.
+        size_in: longest edge of the rendered canvas, in inches. Sets the
+            SVG's internal coordinate space; the browser scales it.
+        line_width_scale: multiplier applied to rendered line widths.
+        units: drawing units, or "auto" to read $INSUNITS.
+        max_svg_bytes: above this, fall back to PNG.
+        png_max_px: longest edge of the PNG fallback, in pixels.
+    """
+    doc = ezdxf.readfile(input_path)
+
+    units_autodetected = False
+    if units == "auto":
+        units, units_autodetected = detect_units(doc, default="mm")
+    elif units not in UNITS_TO_MM:
+        raise ValueError(f"units must be 'auto' or one of {sorted(UNITS_TO_MM)}")
+    unit_to_mm = UNITS_TO_MM[units]
+
+    fig, (width_units, height_units), (fig_w_in, fig_h_in) = (
+        _build_preview_figure(doc, size_in, line_width_scale)
+    )
+    entity_count = sum(1 for _ in doc.modelspace())
+    extents_mm = (width_units * unit_to_mm, height_units * unit_to_mm)
+
+    buffer = io.BytesIO()
+    FigureCanvasSVG(fig)
+    fig.savefig(buffer, format="svg", facecolor="white")
+    raw = buffer.getvalue()
+
+    if len(raw) <= max_svg_bytes:
+        svg = raw.decode("utf-8", errors="replace")
+        # Strip the XML prolog and any DOCTYPE: this markup is injected into
+        # an existing HTML document, where only <svg> itself is valid.
+        start = svg.find("<svg")
+        if start > 0:
+            svg = svg[start:]
+        return PreviewResult(
+            drawing_units=units,
+            units_autodetected=units_autodetected,
+            drawing_extents_mm=extents_mm,
+            entity_count=entity_count,
+            format="svg",
+            aspect=fig_w_in / fig_h_in,
+            svg=_make_svg_responsive(_sanitize_svg(svg)),
+        )
+
+    png = io.BytesIO()
+    FigureCanvasAgg(fig)
+    fig.savefig(
+        png, format="png", facecolor="white",
+        dpi=max(50.0, png_max_px / max(fig_w_in, fig_h_in)),
+    )
+    return PreviewResult(
+        drawing_units=units,
+        units_autodetected=units_autodetected,
+        drawing_extents_mm=extents_mm,
+        entity_count=entity_count,
+        format="png",
+        aspect=fig_w_in / fig_h_in,
+        png_bytes=png.getvalue(),
+        note=(
+            "This drawing is too dense for a vector preview, so this is a "
+            "high-resolution image instead. It will go soft if you zoom "
+            "right in. The converted PDF is still full vector."
+        ),
     )

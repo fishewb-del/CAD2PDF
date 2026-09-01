@@ -37,6 +37,28 @@
       <p id="file-name" class="file-name" hidden></p>
     </div>
 
+    <section id="viewer-panel" hidden>
+      <div class="viewer-head">
+        <h2>Drawing preview</h2>
+        <div class="viewer-tools">
+          <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
+          <span id="zoom-level">100%</span>
+          <button type="button" id="zoom-in" title="Zoom in">+</button>
+          <button type="button" id="zoom-fit" class="wide">Fit</button>
+        </div>
+      </div>
+      <div id="viewer" tabindex="0"
+           aria-label="Drawing preview. Drag to pan, scroll to zoom.">
+        <div id="viewer-stage"></div>
+      </div>
+      <p class="viewer-hint">
+        Drag to pan &middot; scroll or pinch to zoom &middot; double-click to
+        zoom in &middot; <strong>Fit</strong> to reset. This is the drawing
+        itself, not the plotted sheet.
+      </p>
+      <p id="viewer-note" class="viewer-note" hidden></p>
+    </section>
+
     <div class="options">
       <label>
         <span>Scale</span>
@@ -52,10 +74,16 @@
       <label>
         <span>Paper size</span>
         <select name="paper" id="paper">
-          {% for p in paper_sizes %}
-          <option value="{{ p }}" {% if p == 'A4' %}selected{% endif %}>{{ p }}</option>
+          {% for group_name, options in paper_groups %}
+          <optgroup label="{{ group_name }}">
+            {% for value, label in options %}
+            <option value="{{ value }}" {% if value == default_paper %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
         </select>
+        <small>Sheet sizes are portrait dimensions; orientation is applied
+        separately.</small>
       </label>
 
       <label>
