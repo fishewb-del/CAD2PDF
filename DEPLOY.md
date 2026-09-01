@@ -39,17 +39,26 @@ change the port, change both.
 **Note:** a public Space is publicly usable — anyone with the link can
 upload. Use a private Space, or add auth, for client drawings.
 
-## Option 2 — Render (free tier)
+## Option 2 — Render (free, recommended)
+
+> **Non-technical? Follow [RENDER.md](RENDER.md) instead** — a click-by-click
+> walkthrough with screenshots' worth of detail, a troubleshooting table and
+> no terminal. The steps below are the short version.
 
 `render.yaml` is a blueprint, so there's nothing to configure:
 
-1. <https://render.com> → **New → Blueprint**
+1. <https://render.com> → sign in with GitHub → **New → Blueprint**
 2. Connect this repo, pick the branch, **Apply**.
-3. You get `https://<name>.onrender.com`.
+3. You get `https://<name>.onrender.com`. Every push to that branch
+   redeploys automatically.
 
-Free instances sleep after ~15 minutes idle; the next request takes ~30–50s
-to wake. Change `plan: starter` in `render.yaml` to `free` if you want the
-free tier explicitly.
+The blueprint is sized for the free plan (512 MB / 0.1 CPU): one gunicorn
+worker, a 16 MB upload cap and a 75-second DWG timeout. Free instances sleep
+after ~15 minutes idle and the next request takes ~30–60s to wake. Raise the
+limits in the service's **Environment** tab after moving to a paid plan.
+
+Visit `/status` on the deployed app to confirm which GitHub commit is live
+and whether DWG support made it into the build.
 
 ## Option 3 — Fly.io
 
@@ -72,11 +81,16 @@ docker run -d -p 8000:8000 cad2pdf
 
 ## Locking it down
 
-The app has no authentication: anyone with the URL can convert files. Before
-sharing a link that will handle client drawings, either keep the deployment
-private (private HF Space, internal VPS) or put auth in front of it. Uploads
-themselves are never persisted — each conversion happens in a temp directory
-that is deleted when the response is sent.
+By default anyone with the URL can convert files. Set `CAD2PDF_PASSWORD`
+(and optionally `CAD2PDF_USERNAME`, which defaults to `cad`) in the host's
+environment settings and the whole app sits behind a browser sign-in prompt.
+`/healthz` stays open on purpose, because hosts poll it to decide whether a
+deploy succeeded.
+
+For anything more than a shared password, keep the deployment private (a
+private HF Space, an internal VPS) or put a real proxy in front of it.
+Uploads themselves are never persisted — each conversion happens in a temp
+directory that is deleted when the response is sent.
 
 ## Environment variables
 
@@ -86,3 +100,11 @@ that is deleted when the response is sent.
 | `CAD2PDF_MAX_UPLOAD_MB` | Upload size limit | `32` |
 | `CAD2PDF_DWG2DXF` | Path to the `dwg2dxf` binary | `dwg2dxf` on `PATH` |
 | `CAD2PDF_DWG_TIMEOUT` | Max seconds for a DWG→DXF conversion | `120` |
+| `WEB_CONCURRENCY` | Gunicorn worker processes | `1` |
+| `WEB_THREADS` | Threads per worker | `4` |
+| `GUNICORN_TIMEOUT` | Seconds before a stuck request kills its worker | `120` |
+| `CAD2PDF_USERNAME` | Username for the optional password gate | `cad` |
+| `CAD2PDF_PASSWORD` | Set to require a login. Unset = no gate | *(unset)* |
+| `CAD2PDF_GIT_REPO` | `owner/repo`, so `/status` can link to GitHub | *(unset)* |
+| `CAD2PDF_GIT_BRANCH` | Branch shown on `/status` | *(unset)* |
+| `CAD2PDF_GIT_COMMIT` | Commit SHA shown on `/status` | *(unset)* |

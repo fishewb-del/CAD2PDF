@@ -1,0 +1,19 @@
+# Keep the build context small. On Render's free plan every deploy uploads
+# this context and rebuilds the image, so anything in here is time saved.
+.git
+.github
+.venv
+.venv-test
+__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+deploy
+DEPLOY.md
+RENDER.md
+README.md
+fly.toml
+render.yaml
+Procfile
+requirements-dev.txt

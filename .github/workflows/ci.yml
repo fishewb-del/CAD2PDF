@@ -60,9 +60,42 @@ jobs:
                 "| printed", info["plotted_mm"], "mm")
           PY
 
+      - name: Deployment dashboard reports the build
+        run: |
+          curl -sf http://localhost:8000/api/status -o status.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("status.json"))
+          assert d["status"] == "ok", d
+          # The image is the whole point of the DWG stage; if LibreDWG
+          # silently dropped out of the build, say so here rather than
+          # letting a deploy discover it.
+          assert d["features"]["dwg"] is True, d["features"]
+          assert d["features"]["password_protected"] is False, d["features"]
+          assert d["limits"]["workers"] == 1, d["limits"]
+          print("status OK:", d["versions"])
+          PY
+          curl -sf http://localhost:8000/status | grep -q "Deployment status"
+
       - name: Stop container
         if: always()
         run: docker stop cad2pdf || true
+
+      - name: Password gate keeps strangers out and health checks in
+        run: |
+          docker run -d --rm -p 8001:8000 --name guarded \
+            -e CAD2PDF_PASSWORD=ci-secret -e CAD2PDF_USERNAME=ci \
+            cad2pdf:ci
+          for i in $(seq 1 45); do
+            curl -sf http://localhost:8001/healthz >/dev/null && break
+            sleep 2
+          done
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code http://localhost:8001/healthz)" = "200"
+          test "$(code http://localhost:8001/)" = "401"
+          test "$(code -u ci:wrong http://localhost:8001/)" = "401"
+          test "$(code -u ci:ci-secret http://localhost:8001/)" = "200"
+          docker stop guarded
 
   huggingface:
     name: Hugging Face Space image
