@@ -12,14 +12,23 @@ kept free of any web/framework concerns.
 from __future__ import annotations
 
 import base64
+import hmac
 import os
 import tempfile
 import traceback
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
+from cad2pdf import __version__ as CAD2PDF_VERSION
+from cad2pdf.buildinfo import (
+    as_dict,
+    format_uptime,
+    get_build_info,
+    runtime_versions,
+    uptime_seconds,
+)
 from cad2pdf.converter import (
     PAPER_SIZES_MM,
     STANDARD_SCALES,
@@ -30,8 +39,47 @@ from cad2pdf.dwg import DwgConversionError, convert_dwg_to_dxf, dwg_available
 
 MAX_UPLOAD_MB = int(os.environ.get("CAD2PDF_MAX_UPLOAD_MB", "32"))
 
+# Optional password gate. A free Render service has a public URL that anyone
+# who learns it can use, which is fine for a demo and not fine for client
+# drawings. Set CAD2PDF_PASSWORD in the Render dashboard and the whole app
+# sits behind a browser login prompt. Leave it unset and nothing changes.
+AUTH_USERNAME = os.environ.get("CAD2PDF_USERNAME", "cad").strip()
+AUTH_PASSWORD = os.environ.get("CAD2PDF_PASSWORD", "").strip()
+
+# Render polls the health check without credentials, so it can never be
+# behind the gate - a 401 there would fail every deploy.
+_UNPROTECTED_ENDPOINTS = {"healthz"}
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+
+
+def auth_enabled() -> bool:
+    return bool(AUTH_PASSWORD)
+
+
+@app.before_request
+def require_password():
+    if not auth_enabled() or request.endpoint in _UNPROTECTED_ENDPOINTS:
+        return None
+
+    creds = request.authorization
+    # compare_digest on both fields, and always on both, so a wrong
+    # username can't be told apart from a wrong password by timing.
+    user_ok = creds is not None and hmac.compare_digest(
+        (creds.username or ""), AUTH_USERNAME
+    )
+    pass_ok = creds is not None and hmac.compare_digest(
+        (creds.password or ""), AUTH_PASSWORD
+    )
+    if user_ok and pass_ok:
+        return None
+
+    return Response(
+        "Sign in to use this converter.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="cad2pdf"'},
+    )
 
 
 @app.get("/")
@@ -48,7 +96,57 @@ def index():
 
 @app.get("/healthz")
 def healthz():
+    """
+    Liveness probe. Render polls this (healthCheckPath in render.yaml) to
+    decide whether a deploy succeeded, so it must stay cheap and must not
+    touch anything that can fail.
+    """
     return jsonify(status="ok")
+
+
+def _status_payload() -> dict:
+    """The facts the deployment dashboard shows, as plain JSON."""
+    info = get_build_info()
+    return {
+        "status": "ok",
+        "app_version": CAD2PDF_VERSION,
+        "deployment": as_dict(info),
+        "uptime_seconds": round(uptime_seconds(), 1),
+        "uptime": format_uptime(uptime_seconds()),
+        "features": {
+            "dxf": True,
+            "dwg": dwg_available(),
+            "password_protected": auth_enabled(),
+        },
+        "limits": {
+            "max_upload_mb": MAX_UPLOAD_MB,
+            "dwg_timeout_seconds": int(
+                os.environ.get("CAD2PDF_DWG_TIMEOUT", "120")
+            ),
+            "workers": int(os.environ.get("WEB_CONCURRENCY", "1")),
+            "threads": int(os.environ.get("WEB_THREADS", "4")),
+        },
+        "versions": runtime_versions(),
+    }
+
+
+@app.get("/api/status")
+def api_status():
+    """Machine-readable version of /status - handy for uptime monitors."""
+    return jsonify(_status_payload())
+
+
+@app.get("/status")
+def status_page():
+    """
+    Deployment dashboard.
+
+    Answers the one question you actually have after pushing to GitHub:
+    is the app running right now the commit I just pushed? Render sets
+    RENDER_GIT_* on every build, so this page links straight back to the
+    commit on GitHub.
+    """
+    return render_template("status.html", **_status_payload())
 
 
 def _format_extent(mm: float, units: str) -> str:

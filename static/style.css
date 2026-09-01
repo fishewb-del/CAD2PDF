@@ -198,3 +198,41 @@ button[type="submit"]:not(:disabled):hover { filter: brightness(1.08); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+/* ---- deployment status page (/status) ---- */
+.panel {
+  margin-bottom: 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+}
+.panel h2 { margin: 0; font-size: 1.05rem; }
+.panel .result-info { margin-bottom: 0; }
+.panel a { color: var(--accent); }
+.note { color: var(--muted); font-size: .82rem; margin: 1rem 0 0; }
+
+.checks { list-style: none; margin: 1rem 0 0; padding: 0; }
+.checks li {
+  padding: .35rem 0 .35rem 1.5rem;
+  position: relative;
+  line-height: 1.45;
+}
+.checks li::before {
+  position: absolute;
+  left: 0;
+  font-weight: 700;
+}
+.checks li.ok { color: var(--ok); }
+.checks li.ok::before { content: "\2713"; }
+.checks li.warn { color: var(--danger); }
+.checks li.warn::before { content: "\26A0"; }
+
+.footer-link {
+  max-width: 780px;
+  margin: 2rem auto 0;
+  color: var(--muted);
+  font-size: .82rem;
+  text-align: center;
+}
+.footer-link a { color: var(--muted); }

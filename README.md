@@ -59,7 +59,7 @@ python app.py                     # http://localhost:5000
 or for production:
 
 ```bash
-gunicorn app:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 180
+gunicorn app:app --bind 0.0.0.0:8000 --workers 1 --threads 4 --timeout 120
 ```
 
 DXF works immediately. For `.dwg` support you also need LibreDWG's
@@ -68,19 +68,24 @@ still runs and simply asks users to upload DXF instead.
 
 ### Deploying (to get a shareable URL)
 
-**Never deployed anything before?** Follow
-[deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md) — a click-by-click
-walkthrough that puts this online for free in about 15 minutes, with no
-terminal and no credit card. [DEPLOY.md](DEPLOY.md) covers the other hosts.
+**Never deployed anything before?** Follow [RENDER.md](RENDER.md), a
+click-by-click walkthrough that puts this online for free on Render in about
+20 minutes, with no terminal and no credit card. Hugging Face Spaces is
+covered the same way in
+[deploy/huggingface/GUIDE.md](deploy/huggingface/GUIDE.md), and
+[DEPLOY.md](DEPLOY.md) summarises every host.
 
 The app has to run on a server — it can't be a static page, since it needs
 Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are
 included; both build the Dockerfile, so DWG support comes with them.
 
-**Render** — `render.yaml` is a blueprint:
+**Render** (recommended free option) — `render.yaml` is a blueprint:
 New → Blueprint → pick this repo → Apply. You get
-`https://<name>.onrender.com`. The free plan sleeps when idle (first
-request after a nap takes ~30s to wake).
+`https://<name>.onrender.com`, and every push to the connected branch
+redeploys automatically. The blueprint targets the free plan and sizes the
+app for it: 1 gunicorn worker, a 16 MB upload cap, shorter timeouts. Free
+instances sleep when idle (the first request after a nap takes ~30-60s to
+wake). Full walkthrough: [RENDER.md](RENDER.md).
 
 **Fly.io** — `fly.toml` is ready:
 
@@ -103,6 +108,35 @@ cached afterwards.
 | `CAD2PDF_MAX_UPLOAD_MB` | Upload size limit | `32` |
 | `CAD2PDF_DWG2DXF` | Path to the `dwg2dxf` binary | `dwg2dxf` (on `PATH`) |
 | `CAD2PDF_DWG_TIMEOUT` | Max seconds for a DWG→DXF conversion | `120` |
+| `WEB_CONCURRENCY` | Gunicorn worker processes | `1` |
+| `WEB_THREADS` | Threads per worker | `4` |
+| `GUNICORN_TIMEOUT` | Seconds before a stuck request kills its worker | `120` |
+| `CAD2PDF_USERNAME` | Username for the optional password gate | `cad` |
+| `CAD2PDF_PASSWORD` | Set this to require a login. Unset = no gate | *(unset)* |
+
+Workers each load matplotlib and hold a whole drawing while rendering, so
+one worker per 512 MB of memory is the right ratio. Threads give you
+concurrency without the memory cost.
+
+### Password gate
+
+Setting `CAD2PDF_PASSWORD` puts the whole app behind an HTTP basic-auth
+prompt. `/healthz` deliberately stays open, since hosts poll it to decide
+whether a deploy succeeded. Leave the variable unset and behaviour is
+unchanged.
+
+### Status endpoints
+
+| Path | What it is |
+|---|---|
+| `/healthz` | Liveness probe. Cheap, always open, returns `{"status": "ok"}` |
+| `/status` | Deployment dashboard: which GitHub commit is live, whether DWG support built, current limits and versions |
+| `/api/status` | The same information as JSON |
+
+On Render, `/status` reads the `RENDER_GIT_*` variables Render injects at
+build time, so it links straight back to the deployed commit on GitHub. On
+any other Docker host, pass `CAD2PDF_GIT_REPO`, `CAD2PDF_GIT_BRANCH` and
+`CAD2PDF_GIT_COMMIT` to get the same links.
 
 ## DWG support
 

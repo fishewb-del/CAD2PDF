@@ -23,7 +23,7 @@ RUN curl -sSL -o libredwg.tar.gz \
     && ./configure --disable-python --disable-bindings \
                    --disable-shared --enable-static \
                    --disable-werror \
-    && make -j"$(nproc)" \
+    && make -j2 \
     && cp programs/dwg2dxf /usr/local/bin/dwg2dxf \
     && strip /usr/local/bin/dwg2dxf
 
@@ -35,21 +35,31 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MPLBACKEND=Agg \
-    MPLCONFIGDIR=/tmp/matplotlib
+    MPLCONFIGDIR=/home/appuser/.matplotlib
 
 WORKDIR /app
 
 COPY --from=dwg-builder /usr/local/bin/dwg2dxf /usr/local/bin/dwg2dxf
 
+# Run as a non-root user; conversions only ever touch per-request temp dirs.
+RUN useradd --create-home --uid 10001 appuser
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN chown -R appuser:appuser /app /home/appuser
 
-# Run as a non-root user; conversions only ever touch per-request temp dirs.
-RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
 USER appuser
 
+# Build matplotlib's font cache now, at image build time. Otherwise the
+# first request after every cold start pays for it - and on Render's free
+# plan the instance sleeps when idle, so "cold start" means most mornings.
+RUN python -c "import matplotlib.pyplot"
+
 EXPOSE 8000
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-8000} --workers 2 --threads 4 --timeout 180"]
+
+# Worker/thread counts and timeouts come from the environment so the same
+# image runs on a 512 MB free instance (1 worker) and on a larger paid one
+# without a rebuild. See render.yaml for the free-tier values.
+CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT:-8000} --workers ${WEB_CONCURRENCY:-1} --threads ${WEB_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-120} --graceful-timeout 30 --access-logfile - --error-logfile -"]

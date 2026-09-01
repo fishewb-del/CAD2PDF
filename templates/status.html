@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cad2pdf: deployment status</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header>
+  <h1>Deployment status</h1>
+  <p class="tagline">
+    What is running right now, and which GitHub commit it was built from.
+    <a href="{{ url_for('index') }}">Back to the converter</a>
+  </p>
+</header>
+
+<main>
+
+  <section class="panel">
+    <h2>Source</h2>
+    <dl class="result-info">
+      <div>
+        <dt>Host</dt>
+        <dd>{{ deployment.host }}</dd>
+      </div>
+      <div>
+        <dt>Service</dt>
+        <dd>{{ deployment.service_name or 'not reported' }}</dd>
+      </div>
+      <div>
+        <dt>Repository</dt>
+        <dd>
+          {% if deployment.repo_url %}
+          <a href="{{ deployment.repo_url }}" target="_blank" rel="noopener noreferrer">{{ deployment.repo_slug }}</a>
+          {% else %}not reported{% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Branch</dt>
+        <dd>
+          {% if deployment.branch_url %}
+          <a href="{{ deployment.branch_url }}" target="_blank" rel="noopener noreferrer">{{ deployment.branch }}</a>
+          {% else %}{{ deployment.branch or 'not reported' }}{% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Commit</dt>
+        <dd>
+          {% if deployment.commit_url %}
+          <a href="{{ deployment.commit_url }}" target="_blank" rel="noopener noreferrer">{{ deployment.short_commit }}</a>
+          {% else %}{{ deployment.short_commit or 'not reported' }}{% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Uptime</dt>
+        <dd>{{ uptime }}</dd>
+      </div>
+    </dl>
+    <p class="note">
+      If the commit above isn't the one you just pushed, the deploy either
+      hasn't finished or it failed. Check the <strong>Events</strong> tab of
+      the service in the Render dashboard.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Capabilities</h2>
+    <ul class="checks">
+      <li class="ok">DXF conversion: available</li>
+      {% if features.dwg %}
+      <li class="ok">DWG conversion: available (LibreDWG installed)</li>
+      {% else %}
+      <li class="warn">
+        DWG conversion: not available on this instance. Uploads must be
+        DXF. This means the image was built without LibreDWG.
+      </li>
+      {% endif %}
+      {% if features.password_protected %}
+      <li class="ok">Password gate: on (CAD2PDF_PASSWORD is set)</li>
+      {% else %}
+      <li class="warn">
+        Password gate: off. Anyone with this URL can upload drawings. Set
+        CAD2PDF_PASSWORD in the host's environment settings to turn it on.
+      </li>
+      {% endif %}
+    </ul>
+    <dl class="result-info">
+      <div>
+        <dt>Upload limit</dt>
+        <dd>{{ limits.max_upload_mb }} MB</dd>
+      </div>
+      <div>
+        <dt>DWG timeout</dt>
+        <dd>{{ limits.dwg_timeout_seconds }} s</dd>
+      </div>
+      <div>
+        <dt>Workers × threads</dt>
+        <dd>{{ limits.workers }} × {{ limits.threads }}</dd>
+      </div>
+      <div>
+        <dt>cad2pdf</dt>
+        <dd>{{ app_version }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <h2>Runtime</h2>
+    <dl class="result-info">
+      {% for name, version in versions.items() %}
+      <div>
+        <dt>{{ name }}</dt>
+        <dd>{{ version }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    <p class="note">
+      The same information as JSON:
+      <a href="{{ url_for('api_status') }}">/api/status</a>. Point an uptime
+      monitor at <a href="{{ url_for('healthz') }}">/healthz</a> if you want
+      to keep a free instance from sleeping.
+    </p>
+  </section>
+
+</main>
+</body>
+</html>

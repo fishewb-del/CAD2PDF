@@ -1,14 +1,43 @@
-# Render.com blueprint. In Render: New -> Blueprint -> pick this repo.
-# Uses the Dockerfile, so .dwg support (LibreDWG) is built in.
+# Render.com blueprint.
+#
+# In Render:  New  ->  Blueprint  ->  connect this GitHub repo  ->  Apply.
+# Render reads this file, builds the Dockerfile (so .dwg support via
+# LibreDWG is included) and puts the app on a public https URL.
+#
+# Step-by-step walkthrough for non-technical users: see RENDER.md.
 services:
   - type: web
     name: cad2pdf
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter          # "free" also works; free instances sleep when idle
+    plan: free              # 512 MB RAM / 0.1 CPU, sleeps after ~15 min idle
+    region: oregon
+    autoDeploy: true        # every push to the connected branch redeploys
     healthCheckPath: /healthz
     envVars:
+      # One gunicorn worker. Each worker loads matplotlib and holds a whole
+      # drawing in memory while it renders; two of them will OOM a 512 MB
+      # free instance on a large plan. Threads still give us concurrency.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: WEB_THREADS
+        value: "4"
+      # Deliberately lower than the 32 MB default. On a free instance the
+      # limit that bites first is RAM, not disk: a 32 MB DXF can expand to
+      # hundreds of MB of matplotlib paths and get the worker killed.
       - key: CAD2PDF_MAX_UPLOAD_MB
-        value: "32"
+        value: "16"
+      # 0.1 CPU makes DWG->DXF slow. Fail with a readable message well
+      # before gunicorn's own 120 s timeout kills the worker outright.
       - key: CAD2PDF_DWG_TIMEOUT
+        value: "75"
+      - key: GUNICORN_TIMEOUT
         value: "120"
+      # Optional password gate. Uncomment, or (easier) add it in the Render
+      # dashboard under the service's Environment tab. Once it is set, the
+      # site asks for a username and password before it will convert
+      # anything. The health check stays open so deploys still pass.
+      # - key: CAD2PDF_USERNAME
+      #   value: "edger"
+      # - key: CAD2PDF_PASSWORD
+      #   sync: false          # Render prompts you for the value
