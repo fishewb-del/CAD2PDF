@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAD to PDF — accurate, to scale</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header>
+  <h1>CAD&nbsp;→&nbsp;PDF</h1>
+  <p class="tagline">
+    Converts {% if dwg_supported %}DWG and {% endif %}DXF drawings to
+    true-vector PDFs at an exact, labeled drafting scale — so you can still
+    measure off the print.
+  </p>
+</header>
+
+<main>
+  <form id="convert-form">
+    <div id="drop-zone" tabindex="0" role="button"
+         aria-label="Choose or drop a DXF file">
+      <input type="file" id="file-input" name="file"
+             accept="{% if dwg_supported %}.dxf,.dwg{% else %}.dxf{% endif %}" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="drop-icon">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+              fill="none" stroke="currentColor" stroke-width="1.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <p class="drop-title">
+        Drop a {% if dwg_supported %}<strong>.dwg</strong> or {% endif %}<strong>.dxf</strong>
+        file here, or click to browse
+      </p>
+      <p class="drop-hint">Up to {{ max_upload_mb }} MB · nothing is stored on the server</p>
+      <p id="file-name" class="file-name" hidden></p>
+    </div>
+
+    <div class="options">
+      <label>
+        <span>Scale</span>
+        <select name="scale" id="scale">
+          <option value="">Fit to page (best standard scale)</option>
+          {% for n in standard_scales %}
+          <option value="1:{{ n }}">1:{{ n }}</option>
+          {% endfor %}
+        </select>
+        <small>An exact ratio, never a stretched-to-fit approximation.</small>
+      </label>
+
+      <label>
+        <span>Paper size</span>
+        <select name="paper" id="paper">
+          {% for p in paper_sizes %}
+          <option value="{{ p }}" {% if p == 'A4' %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        <span>Orientation</span>
+        <select name="orientation" id="orientation">
+          <option value="auto" selected>Auto</option>
+          <option value="portrait">Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Drawing units</span>
+        <select name="units" id="units">
+          <option value="auto" selected>Auto-detect from file</option>
+          {% for u in units %}
+          <option value="{{ u }}">{{ u }}</option>
+          {% endfor %}
+        </select>
+        <small>What one drawing unit means in the real world. Getting this
+        wrong is the #1 cause of a wrong scale.</small>
+      </label>
+
+      <label>
+        <span>Margin (mm)</span>
+        <input type="number" name="margin" id="margin" value="10"
+               min="0" max="200" step="1">
+      </label>
+
+      <label>
+        <span>Line weight</span>
+        <input type="number" name="line_width_scale" id="line_width_scale"
+               value="1.0" min="0.1" max="10" step="0.1">
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" name="show_label" id="show_label" checked>
+        <span>Print scale &amp; units in the PDF footer</span>
+      </label>
+    </div>
+
+    <button type="submit" id="submit-btn" disabled>Convert to PDF</button>
+  </form>
+
+  <div id="status" class="status" hidden></div>
+
+  <section id="result" hidden>
+    <div class="result-head">
+      <h2>Your PDF is ready</h2>
+      <a id="download-link" class="download-btn" download>Download PDF</a>
+    </div>
+    <dl id="result-info" class="result-info"></dl>
+    <img id="preview" alt="Preview of the converted drawing" hidden>
+    <p class="preview-note">
+      Preview is a low-resolution image. The downloaded PDF is full vector —
+      it stays sharp at any zoom, and prints at the exact scale shown above.
+    </p>
+  </section>
+
+  <details class="help">
+    <summary>Which files can I upload?</summary>
+    {% if dwg_supported %}
+    <p>
+      <strong>.dxf</strong> and <strong>.dwg</strong> both work. DWG is
+      Autodesk's closed binary format, so it's converted to DXF server-side
+      first (via LibreDWG) — coordinates, layers, colours and the drawing's
+      declared units are all carried across, so the scale stays exact.
+      Very new or unusual DWG revisions occasionally fail to parse; if that
+      happens, do <em>Save As → DXF</em> in your CAD program and upload that.
+    </p>
+    {% else %}
+    <p>
+      Upload <strong>.dxf</strong> files. DWG is Autodesk's closed binary
+      format and DWG support isn't installed on this server — convert it to
+      DXF first with the free
+      <a href="https://www.opendesign.com/guestfiles/oda_file_converter"
+         target="_blank" rel="noopener noreferrer">ODA File Converter</a>,
+      or <em>Save As → DXF</em> in AutoCAD, BricsCAD or LibreCAD. DXF is
+      lossless, so accuracy and scale are preserved.
+    </p>
+    {% endif %}
+  </details>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

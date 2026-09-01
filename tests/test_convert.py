@@ -106,6 +106,40 @@ def test_units_conversion_affects_required_scale(tmp_path):
     assert result_m.scale_denominator > result_mm.scale_denominator
 
 
+def test_geometry_is_actually_visible_on_the_page(tmp_path):
+    """
+    Regression test: ezdxf defaults to a DARK model-space background, which
+    resolves the default entity colour (ACI 7) to WHITE. Rendered onto a
+    white sheet that produces a page that is valid, correctly sized, and
+    completely blank. Assert real dark ink lands on the page.
+    """
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    dxf_path = tmp_path / "visible.dxf"
+    pdf_path = tmp_path / "visible.pdf"
+    png_path = tmp_path / "visible.png"
+    _make_dxf(dxf_path, width=1000.0, height=500.0)
+
+    convert_dxf_to_pdf(
+        str(dxf_path), str(pdf_path), scale="1:10", paper="A4", units="mm",
+        show_scale_label=False, preview_path=str(png_path),
+    )
+
+    img = Image.open(png_path).convert("L")
+    pixels = img.tobytes()  # one byte per pixel in mode "L"
+    # Threshold is "any ink at all" rather than "dark": CAD linework is
+    # hairline-thin, so at preview resolution most stroke pixels antialias
+    # to light grey. The bug being guarded against renders the page *pure*
+    # white (255 everywhere), so any ink is a decisive signal.
+    inked = sum(1 for p in pixels if p < 250)
+    assert inked > 500, (
+        f"only {inked} inked pixels - the drawing rendered blank or invisible"
+    )
+    # ...and at least some of it should be properly dark, not washed out.
+    assert min(pixels) < 160, f"darkest pixel is {min(pixels)} - nothing solid drawn"
+
+
 def test_missing_geometry_raises(tmp_path):
     dxf_path = tmp_path / "empty.dxf"
     pdf_path = tmp_path / "empty.pdf"

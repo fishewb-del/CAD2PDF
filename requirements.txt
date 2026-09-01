@@ -1,2 +1,4 @@
 ezdxf>=1.1
 matplotlib>=3.7
+Flask>=3.0
+gunicorn>=21.2

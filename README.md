@@ -1,107 +1,133 @@
 # cad2pdf
 
-A small command-line tool that converts CAD drawings (`.dxf`) into PDF
-files while preserving full geometric accuracy and a correct, labeled
-print scale — the way a real CAD plotter works, not an image-resize tool.
+A **web app** that converts CAD drawings (`.dwg` / `.dxf`) into PDFs while
+preserving full geometric accuracy and a correct, labeled print scale —
+the way a real CAD plotter works, not an image-resize tool.
+
+Open it in a browser, drop in a drawing, pick a scale and paper size, and
+download a PDF you can still take measurements off.
+
+![screenshot](docs/screenshot.png)
 
 ## Why this is different from "just export a PDF"
 
 Many quick converters rasterize the drawing or auto-fit it to a page,
-which silently changes the scale and blurs fine detail. `cad2pdf` instead:
+which silently changes the scale and blurs fine detail. `cad2pdf`:
 
-1. **Draws vectors, not pixels.** Every line, arc, circle, polyline, text
-   and hatch is rendered as a true vector path directly into the PDF, so
-   there is no pixelation and you can zoom in without quality loss.
-2. **Uses an exact, known scale.** You either specify a real drafting
-   scale (e.g. `1:50`, `1:100`) or let the tool auto-pick the largest
-   *standard* scale (1:1, 1:2, 1:5, 1:10, 1:20 ... 1:5000) that fits the
-   chosen paper — never an arbitrary stretch factor. One drawing unit
-   always maps to a precise, calculable number of millimetres on paper.
-3. **Never lets rendering auto-resize the page.** (This is a real
-   footgun in the underlying rendering library — its default behavior is
-   to silently resize the output to fit the drawing, which breaks the
-   scale. `cad2pdf` explicitly locks the page size and axis extents so
-   the scale you asked for is the scale you get — see
-   `tests/test_convert.py::test_explicit_scale_matches_page_geometry`.)
-4. **Labels the output.** The PDF footer records the source file, scale,
-   paper size/orientation, drawing units and generation date, so anyone
-   opening the PDF later knows exactly how to measure off it.
+1. **Draws vectors, not pixels.** Every line, arc, circle, polyline, hatch,
+   dimension and text object is rendered as a true vector path into the PDF,
+   so nothing pixelates and it stays sharp at any zoom.
+2. **Uses an exact, known scale.** You either pick a real drafting scale
+   (`1:50`, `1:100`, …) or let it auto-pick the largest *standard* scale
+   (1:1, 1:2, 1:5, 1:10, 1:20 … 1:5000) that fits the paper — never an
+   arbitrary stretch factor. One drawing unit always maps to a precise,
+   calculable number of millimetres on paper.
+3. **Reads the drawing's own units.** A "20 × 10" drawing is a desk in
+   millimetres but a building in metres. cad2pdf reads the DXF `$INSUNITS`
+   header so it scales correctly instead of guessing — and tells you what
+   it detected. You can always override it.
+4. **Refuses to lie.** If the drawing genuinely doesn't fit the requested
+   paper at the requested scale, it says so with the exact numbers rather
+   than silently shrinking or cropping the drawing.
+5. **Labels the output.** The PDF footer records the source file, scale,
+   paper size, orientation and units, so anyone opening it later knows how
+   to measure off it.
 
-## Install
+## Run it
+
+### With Docker (recommended — includes DWG support)
+
+```bash
+docker build -t cad2pdf .
+docker run --rm -p 8000:8000 cad2pdf
+```
+
+Open <http://localhost:8000>.
+
+The image builds LibreDWG's `dwg2dxf` in a first stage so `.dwg` uploads
+work out of the box; the final image only carries the ~17 MB binary.
+
+### With Python directly
+
+```bash
+pip install -r requirements.txt
+python app.py                     # http://localhost:5000
+```
+
+or for production:
+
+```bash
+gunicorn app:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 180
+```
+
+DXF works immediately. For `.dwg` support you also need LibreDWG's
+`dwg2dxf` on `PATH` (see [DWG support](#dwg-support)); without it the app
+still runs and simply asks users to upload DXF instead.
+
+### Deploying
+
+There's a `Procfile`, so any Heroku-style host works. Anything that can run
+a Docker image (Fly.io, Render, Railway, Cloud Run, a plain VPS) can run the
+Dockerfile as-is and gets DWG support with it.
+
+| Env var | Purpose | Default |
+|---|---|---|
+| `PORT` | Port to listen on | `8000` (Docker) / `5000` (`python app.py`) |
+| `CAD2PDF_MAX_UPLOAD_MB` | Upload size limit | `32` |
+| `CAD2PDF_DWG2DXF` | Path to the `dwg2dxf` binary | `dwg2dxf` (on `PATH`) |
+| `CAD2PDF_DWG_TIMEOUT` | Max seconds for a DWG→DXF conversion | `120` |
+
+## DWG support
+
+`.dwg` is Autodesk's closed binary format and can't be parsed directly.
+The app shells out to [LibreDWG](https://www.gnu.org/software/libredwg/)'s
+`dwg2dxf` to convert it to DXF first — coordinates, layers, colours and the
+`$INSUNITS` header all survive, so the scale stays exact.
+
+The Docker image builds it for you. To install it manually:
+
+```bash
+curl -sSLO https://github.com/LibreDWG/libredwg/releases/download/0.13.3/libredwg-0.13.3.tar.gz
+tar xzf libredwg-0.13.3.tar.gz && cd libredwg-0.13.3
+./configure --disable-python --disable-bindings --disable-shared --enable-static
+make -j"$(nproc)"
+sudo cp programs/dwg2dxf /usr/local/bin/ && sudo strip /usr/local/bin/dwg2dxf
+```
+
+Very old or very new DWG revisions occasionally fail to parse. When that
+happens the app says so and suggests *Save As → DXF* from your CAD program,
+which always works.
+
+## Privacy
+
+Uploads are processed in a per-request temporary directory that is deleted
+as soon as the response is sent. Nothing is written to a database or kept on
+disk, and the PDF is handed back in the same response.
+
+## Command line
+
+The same converter is also available as a CLI:
 
 ```bash
 pip install -e .
-# or, without installing the package:
-pip install -r requirements.txt
-```
-
-Requires Python 3.9+. Uses [`ezdxf`](https://ezdxf.readthedocs.io/) to
-parse DXF geometry and `matplotlib`'s vector PDF backend to render it.
-
-## Usage
-
-```bash
-cad2pdf INPUT.dxf OUTPUT.pdf [options]
+cad2pdf drawing.dxf out.pdf --scale 1:100 --paper A3 --units mm
 ```
 
 | Option | Description | Default |
 |---|---|---|
-| `--scale N:M` | Print scale, e.g. `1:100`. Omit to auto-fit to the largest standard scale that fits the page. | auto |
-| `--paper` | `A0`-`A4`, `LETTER`, `LEGAL`, `TABLOID`, or `WIDTHxHEIGHT` in mm (e.g. `500x700`) | `A4` |
-| `--orientation` | `auto`, `portrait`, or `landscape` | `auto` |
-| `--units` | Real-world unit one drawing unit represents: `mm`, `cm`, `m`, `in`, `ft` | `mm` |
-| `--margin` | Blank margin around the drawing, in mm | `10` |
-| `--no-label` | Suppress the scale/units/paper footer | off |
-| `--line-width-scale` | Multiplier on rendered line widths | `1.0` |
+| `--scale N:M` | Print scale, e.g. `1:100`. Omit to auto-fit. | auto |
+| `--paper` | `A0`–`A4`, `LETTER`, `LEGAL`, `TABLOID`, or `WIDTHxHEIGHT` mm | `A4` |
+| `--orientation` | `auto`, `portrait`, `landscape` | `auto` |
+| `--units` | `mm`, `cm`, `m`, `in`, `ft` | auto-detect |
+| `--margin` | Margin around the drawing, mm | `10` |
+| `--no-label` | Suppress the PDF footer | off |
+| `--line-width-scale` | Multiplier on line widths | `1.0` |
 
-### Examples
-
-Auto-fit a drawing to A4 at the best standard scale:
-
-```bash
-cad2pdf floorplan.dxf floorplan.pdf
-```
-
-Plot a 1:100 architectural drawing (in millimetre units) onto A3 landscape:
-
-```bash
-cad2pdf floorplan.dxf floorplan.pdf --scale 1:100 --paper A3 --orientation landscape
-```
-
-A site plan modeled in metres, printed at 1:500 on A1:
-
-```bash
-cad2pdf site.dxf site.pdf --scale 1:500 --paper A1 --units m
-```
-
-If a chosen scale/paper combination is too small for the drawing, the
-tool reports the exact error instead of silently cropping or distorting
-it:
-
-```
-cad2pdf: error: Drawing does not fit on A4 at scale 1:1 (952.0x476.0 mm
-needed, 277.0x190.0 mm available). Choose a larger paper size, a coarser
-scale, or omit --scale to auto-fit.
-```
-
-## About `.dwg` files
-
-`.dwg` is Autodesk's closed, proprietary binary format and can't be
-parsed without Autodesk's own libraries or a conversion step. To convert
-a `.dwg` file:
-
-1. Use the free [ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter)
-   (or AutoCAD/BricsCAD/LibreCAD "Save As") to convert `.dwg` → `.dxf`.
-2. Run `cad2pdf` on the resulting `.dxf`.
-
-Because DXF is a lossless, text-based representation of the same
-geometry AutoCAD uses internally, this two-step path preserves the same
-accuracy as a native DWG plot.
+(The CLI takes DXF; convert DWG with `dwg2dxf` first.)
 
 ## How the scale math works
 
-Given a drawing's bounding box (in drawing units) and a target scale
-`1:N`:
+Given a drawing's bounding box (in drawing units) and a target scale `1:N`:
 
 ```
 plotted_width_mm  = bbox_width_units  * units_to_mm(units) / N
@@ -109,12 +135,23 @@ plotted_height_mm = bbox_height_units * units_to_mm(units) / N
 ```
 
 The matplotlib `Axes` is placed on the figure at exactly
-`plotted_width_mm x plotted_height_mm` (converted to inches, since
-matplotlib figures are inch-based), and its data limits are set to the
-drawing's exact bounding box with an equal aspect ratio. That fixes the
-mapping from drawing units to page millimetres to be precisely `1/N`,
-with no auto-fit distortion — the same guarantee a licensed CAD
-plotter gives you.
+`plotted_width_mm × plotted_height_mm` (converted to inches), and its data
+limits are set to the drawing's exact bounding box with an equal aspect
+ratio. That fixes the mapping from drawing units to page millimetres at
+precisely `1/N`, with no auto-fit distortion — the same guarantee a licensed
+CAD plotter gives you.
+
+Two rendering-library defaults actively fight this, and both are explicitly
+overridden in `cad2pdf/converter.py`:
+
+- `MatplotlibBackend` resizes the figure to the drawing's aspect ratio on
+  `finalize()`, which would discard the computed paper size and scale.
+- `ezdxf` assumes a **dark** CAD background, so default-coloured (ACI 7)
+  entities resolve to **white** — invisible on white paper. On a real
+  structural drawing this silently dropped every dimension string and
+  annotation while still producing a valid-looking PDF.
+
+Both are covered by regression tests.
 
 ## Development
 
@@ -123,7 +160,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The test suite converts synthetic DXF drawings and checks, among other
-things, that the *actual PDF page dimensions* (read back with `pypdf`)
-match the requested paper size — this is the check that would catch a
-renderer silently resizing the output and breaking the scale.
+The suite checks the things that would otherwise fail silently: that the
+actual PDF page dimensions (read back with `pypdf`) match the requested
+paper size, and that the rendered page actually has ink on it rather than
+being a correctly-sized blank sheet. To also run the DWG end-to-end test:
+
+```bash
+CAD2PDF_SAMPLE_DWG=/path/to/a/real.dwg pytest
+```

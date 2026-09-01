@@ -29,13 +29,18 @@ from typing import Optional, Tuple
 import ezdxf
 from ezdxf.addons.drawing import RenderContext, Frontend
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+from ezdxf.addons.drawing.properties import LayoutProperties
 from ezdxf import bbox as ezdxf_bbox
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
+# NOTE: deliberately NOT using matplotlib.pyplot. pyplot keeps a global
+# registry of figures, which is not thread-safe and leaks memory in a
+# long-running web server. Constructing Figure objects directly keeps each
+# conversion fully self-contained.
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_pdf import FigureCanvasPdf
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +74,17 @@ STANDARD_SCALES = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250,
 
 MM_PER_INCH = 25.4
 
+# DXF $INSUNITS header codes -> our unit names. Codes we can't represent
+# (miles, angstroms, ...) are intentionally absent and fall back to the
+# caller-supplied default.
+INSUNITS_TO_UNITS = {
+    1: "in",
+    2: "ft",
+    4: "mm",
+    5: "cm",
+    6: "m",
+}
+
 
 @dataclasses.dataclass
 class ConversionResult:
@@ -80,6 +96,26 @@ class ConversionResult:
     drawing_units: str
     drawing_extents_mm: Tuple[float, float]
     fit_mode: bool
+    units_autodetected: bool = False
+    preview_path: Optional[str] = None
+
+
+def detect_units(doc, default: str = "mm") -> Tuple[str, bool]:
+    """
+    Read the drawing's own unit declaration ($INSUNITS) from the DXF header.
+
+    This matters a lot for accuracy: a "20 x 10" drawing is a desk in
+    millimetres but a building in metres, and guessing wrong scales the
+    output by 1000x. Returns (units, was_autodetected).
+    """
+    try:
+        code = int(doc.header.get("$INSUNITS", 0))
+    except (KeyError, TypeError, ValueError):
+        return default, False
+    units = INSUNITS_TO_UNITS.get(code)
+    if units is None:
+        return default, False
+    return units, True
 
 
 def _parse_scale(scale: Optional[str]) -> Optional[float]:
@@ -161,9 +197,12 @@ def convert_dxf_to_pdf(
     paper: str = "A4",
     orientation: str = "auto",
     margin_mm: float = 10.0,
-    units: str = "mm",
+    units: str = "auto",
     show_scale_label: bool = True,
     line_width_scale: float = 1.0,
+    preview_path: Optional[str] = None,
+    preview_max_px: int = 1400,
+    source_name: Optional[str] = None,
 ) -> ConversionResult:
     """
     Convert a DXF file to an accurately-scaled, vector PDF.
@@ -176,20 +215,34 @@ def convert_dxf_to_pdf(
         paper: one of PAPER_SIZES_MM keys, or "WIDTHxHEIGHT" in mm.
         orientation: "auto" (fit drawing best), "portrait" or "landscape".
         margin_mm: blank margin kept around the drawing on all sides.
-        units: drawing's real-world unit ("mm", "cm", "m", "in", "ft").
-            DXF files store unitless numbers; this tells cad2pdf what one
-            drawing unit actually represents.
+        units: drawing's real-world unit ("mm", "cm", "m", "in", "ft"), or
+            "auto" (default) to read the drawing's own $INSUNITS header and
+            fall back to mm if it doesn't declare one.
         show_scale_label: print scale/units/paper info in the PDF footer.
         line_width_scale: multiplier applied to rendered line widths.
+        preview_path: if given, also write a raster PNG preview here. The
+            PDF itself always stays pure vector; this is only for on-screen
+            display.
+        preview_max_px: longest edge of the PNG preview, in pixels.
+        source_name: name to print in the footer. Defaults to the input
+            file's name; callers that stage uploads under a temporary
+            filename should pass the user's original name here.
 
     Returns:
         ConversionResult with the scale and layout actually used.
     """
-    if units not in UNITS_TO_MM:
-        raise ValueError(f"units must be one of {sorted(UNITS_TO_MM)}")
-    unit_to_mm = UNITS_TO_MM[units]
+    if units != "auto" and units not in UNITS_TO_MM:
+        raise ValueError(
+            f"units must be 'auto' or one of {sorted(UNITS_TO_MM)}"
+        )
 
     doc = ezdxf.readfile(input_path)
+
+    units_autodetected = False
+    if units == "auto":
+        units, units_autodetected = detect_units(doc, default="mm")
+    unit_to_mm = UNITS_TO_MM[units]
+
     xmin, ymin, xmax, ymax = _drawing_extents(doc)
     width_units = xmax - xmin
     height_units = ymax - ymin
@@ -247,7 +300,9 @@ def convert_dxf_to_pdf(
 
     fig_w_in = paper_w_mm / MM_PER_INCH
     fig_h_in = paper_h_mm / MM_PER_INCH
-    fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=300)
+    fig = Figure(figsize=(fig_w_in, fig_h_in), dpi=300)
+    FigureCanvasPdf(fig)
+    fig.patch.set_facecolor("white")
 
     axes_w_frac = plotted_w_mm / paper_w_mm
     axes_h_frac = plotted_h_mm / paper_h_mm
@@ -265,7 +320,21 @@ def convert_dxf_to_pdf(
     ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
 
+    msp = doc.modelspace()
+
     ctx = RenderContext(doc)
+    # CAD model space is conventionally a DARK background, so ezdxf resolves
+    # the default entity colour (ACI 7) to WHITE - which is invisible when
+    # plotted onto a white sheet, producing a page that is correctly sized
+    # and completely blank. Declaring a white background makes ACI 7 resolve
+    # to black, the way a plotted drawing should look.
+    #
+    # This MUST be passed into draw_layout() as layout_properties: setting it
+    # on ctx beforehand does nothing, because draw_layout() internally calls
+    # ctx.set_current_layout(), which resets it back to the dark default.
+    layout_props = LayoutProperties.from_layout(msp)
+    layout_props.set_colors(bg="#FFFFFF")
+
     # adjust_figure=False: without it, MatplotlibBackend.finalize() resizes
     # our precisely-computed page/figure to fit the data's aspect ratio,
     # silently discarding the paper size and scale we just calculated.
@@ -276,7 +345,7 @@ def convert_dxf_to_pdf(
             backend.line_width_scaling = line_width_scale
         except AttributeError:
             pass
-    frontend.draw_layout(doc.modelspace(), finalize=True)
+    frontend.draw_layout(msp, finalize=True, layout_properties=layout_props)
 
     # finalize() also re-enables autoscale on the axes, which can nudge the
     # data limits away from the exact extents we based the scale on. Pin
@@ -288,7 +357,7 @@ def convert_dxf_to_pdf(
 
     if show_scale_label:
         label = (
-            f"{os.path.basename(input_path)}   |   "
+            f"{source_name or os.path.basename(input_path)}   |   "
             f"Scale 1:{scale_den:g}"
             f"{' (auto-fit)' if fit_mode else ''}   |   "
             f"Paper {paper.upper()} {orientation_used}   |   "
@@ -298,9 +367,15 @@ def convert_dxf_to_pdf(
         fig.text(0.5, 0.02, label, ha="center", va="bottom", fontsize=6,
                   family="monospace", color="black")
 
-    with PdfPages(output_path) as pdf:
-        pdf.savefig(fig)
-    plt.close(fig)
+    # Vector PDF - this is the real deliverable, no rasterization anywhere.
+    fig.savefig(output_path, format="pdf", facecolor="white")
+
+    if preview_path is not None:
+        # Raster preview for on-screen display only. dpi is chosen so the
+        # longest edge lands near preview_max_px regardless of paper size.
+        preview_dpi = max(20.0, preview_max_px / max(fig_w_in, fig_h_in))
+        fig.savefig(preview_path, format="png", dpi=preview_dpi,
+                     facecolor="white")
 
     return ConversionResult(
         output_path=output_path,
@@ -311,4 +386,6 @@ def convert_dxf_to_pdf(
         drawing_units=units,
         drawing_extents_mm=(width_mm, height_mm),
         fit_mode=fit_mode,
+        units_autodetected=units_autodetected,
+        preview_path=preview_path,
     )
