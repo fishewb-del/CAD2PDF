@@ -1,0 +1,14 @@
+# Render.com blueprint. In Render: New -> Blueprint -> pick this repo.
+# Uses the Dockerfile, so .dwg support (LibreDWG) is built in.
+services:
+  - type: web
+    name: cad2pdf
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # "free" also works; free instances sleep when idle
+    healthCheckPath: /healthz
+    envVars:
+      - key: CAD2PDF_MAX_UPLOAD_MB
+        value: "32"
+      - key: CAD2PDF_DWG_TIMEOUT
+        value: "120"

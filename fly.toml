@@ -1,0 +1,28 @@
+# Fly.io config. Deploy with:  fly launch --copy-config --now
+app = "cad2pdf"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  CAD2PDF_MAX_UPLOAD_MB = "32"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[http_service.checks]]
+  path = "/healthz"
+  interval = "30s"
+  timeout = "5s"
+
+[[vm]]
+  # Rendering a large drawing is memory-hungry; bump to 1gb if you plot
+  # big sheets (A1/A0) or very dense DWGs.
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

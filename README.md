@@ -64,11 +64,31 @@ DXF works immediately. For `.dwg` support you also need LibreDWG's
 `dwg2dxf` on `PATH` (see [DWG support](#dwg-support)); without it the app
 still runs and simply asks users to upload DXF instead.
 
-### Deploying
+### Deploying (to get a shareable URL)
 
-There's a `Procfile`, so any Heroku-style host works. Anything that can run
-a Docker image (Fly.io, Render, Railway, Cloud Run, a plain VPS) can run the
-Dockerfile as-is and gets DWG support with it.
+The app has to run on a server — it can't be a static page, since it needs
+Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are
+included; both build the Dockerfile, so DWG support comes with them.
+
+**Render** — `render.yaml` is a blueprint:
+New → Blueprint → pick this repo → Apply. You get
+`https://<name>.onrender.com`. The free plan sleeps when idle (first
+request after a nap takes ~30s to wake).
+
+**Fly.io** — `fly.toml` is ready:
+
+```bash
+fly launch --copy-config --now      # first deploy, creates the app
+fly deploy                          # subsequent deploys
+fly open                            # opens the URL
+```
+
+Any other Docker host (Railway, Cloud Run, a VPS) works with the Dockerfile
+as-is. There's also a `Procfile` for Heroku-style buildpack hosts, though
+those won't have `dwg2dxf` unless you install it yourself — DXF still works.
+
+The LibreDWG build stage adds a few minutes to the *first* image build; it's
+cached afterwards.
 
 | Env var | Purpose | Default |
 |---|---|---|
