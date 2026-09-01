@@ -68,6 +68,9 @@ still runs and simply asks users to upload DXF instead.
 
 ### Deploying (to get a shareable URL)
 
+**See [DEPLOY.md](DEPLOY.md) for step-by-step instructions**, including a
+free option that keeps DWG support (Hugging Face Spaces, no credit card).
+
 The app has to run on a server — it can't be a static page, since it needs
 Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are
 included; both build the Dockerfile, so DWG support comes with them.
