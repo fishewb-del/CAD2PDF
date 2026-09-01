@@ -91,13 +91,19 @@ jobs:
             http://localhost:8000/api/preview)
           test "$code" = "200" || { echo "HTTP $code"; cat prev.json; exit 1; }
           python3 - <<'PY'
-          import json
+          import json, re
           d = json.load(open("prev.json"))
-          assert d["ok"] and d["format"] == "svg", d.get("format")
+          assert d["ok"], d
           svg = d["svg"]
           assert "viewBox" in svg, "no viewBox: the viewer could not scale it"
           assert "<script" not in svg.lower(), "script tag in injected SVG"
           assert d["aspect"] > 0, d["aspect"]
+          # A drawing this small must never trip the simplified fallback.
+          assert d["simplified"] is False, d
+          # The stage is sized from "aspect", so it has to match the viewBox
+          # the browser actually renders or the drawing comes out stretched.
+          vb = re.search(r'viewBox="([^"]+)"', svg).group(1).split()
+          assert abs(float(vb[2]) / float(vb[3]) - d["aspect"]) < 0.01, (vb, d["aspect"])
           print("preview OK:", len(svg), "bytes,", d["info"]["entity_count"],
                 "entities,", d["info"]["drawing_display"])
           PY
