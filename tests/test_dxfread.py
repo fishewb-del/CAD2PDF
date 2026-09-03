@@ -91,7 +91,7 @@ def test_wrapped_text_value_is_stitched_back_together(tmp_path):
     assert _texts(loaded.doc) == [f"{NOTE_LINE_1} {NOTE_LINE_2}"]
     # The geometry is the whole point - it must come through intact.
     assert sum(1 for e in loaded.doc.modelspace()) == 2
-    assert loaded.note and "line break" in loaded.note
+    assert loaded.note and "split across two lines" in loaded.note
 
 
 def test_a_value_wrapped_over_several_lines_is_fully_rejoined(tmp_path):
@@ -102,7 +102,7 @@ def test_a_value_wrapped_over_several_lines_is_fully_rejoined(tmp_path):
 
     assert loaded.strategy == "stitched"
     assert _texts(loaded.doc) == [" ".join((NOTE_LINE_1,) + extra)]
-    assert "2 line breaks" in loaded.note
+    assert "2 long text values" in loaded.note
 
 
 def test_stitching_counts_only_the_lines_it_rejoins(tmp_path):
@@ -120,6 +120,38 @@ def test_stitching_leaves_a_clean_file_byte_for_byte_readable(tmp_path):
     dst = tmp_path / "copy.dxf"
     stitch_wrapped_values(str(src), str(dst))
     assert _texts(ezdxf.readfile(str(dst))) == [NOTE_LINE_1]
+
+
+def test_a_hard_wrap_at_the_255_byte_limit_rejoins_with_no_gap(tmp_path):
+    """
+    The real failure from the field. dwg2dxf writes a value longer than the
+    255-byte DXF string limit by wrapping the line mid-word, so the halves
+    must be rejoined with nothing between them. Putting a space there would
+    quietly corrupt the text, and would break an MTEXT formatting code that
+    straddles the split.
+    """
+    head = "THIS DRAWING IS THE PROPERTY OF DESIGN GROUP FACILITY SOLUTIONS"
+    head = head + "X" * (255 - len(head) - 5) + "DESIG"
+    assert len(head) == 255
+    tail = "N GROUP FACILITY SOLUTIONS, INC. ON COMPLETION OF WORK."
+
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 0)])
+    doc.modelspace().add_text(head + tail, dxfattribs={"height": 5})
+    path = tmp_path / "wrapped255.dxf"
+    doc.saveas(path)
+
+    # Re-wrap the way dwg2dxf does: cut the value at exactly 255 bytes.
+    text = path.read_text(encoding="utf-8")
+    assert head + tail in text
+    path.write_text(text.replace(head + tail, head + "\n" + tail), encoding="utf-8")
+
+    loaded = read_dxf(str(path))
+
+    assert loaded.strategy == "stitched"
+    assert _texts(loaded.doc) == [head + tail]
+    assert "DESIGN GROUP" in _texts(loaded.doc)[0]
+    assert "DESIG N GROUP" not in _texts(loaded.doc)[0]
 
 
 def test_numeric_looking_text_is_not_mistaken_for_a_group_code(tmp_path):
@@ -169,7 +201,7 @@ def test_wrapped_file_converts_to_pdf_and_reports_the_repair(tmp_path):
     result = convert_dxf_to_pdf(str(path), str(pdf_path), paper="A3", units="mm")
 
     assert pdf_path.read_bytes()[:4] == b"%PDF"
-    assert result.repair_note and "line break" in result.repair_note
+    assert result.repair_note and "split across two lines" in result.repair_note
 
 
 def test_wrapped_file_previews_and_carries_the_note(tmp_path):
@@ -194,7 +226,7 @@ def test_upload_of_a_wrapped_dxf_converts_instead_of_400(tmp_path, client):
     payload = res.get_json()
     assert payload["ok"] is True
     assert payload["pdf_b64"]
-    assert "line break" in payload["note"]
+    assert "split across two lines" in payload["note"]
 
 
 def test_unreadable_dxf_upload_explains_the_next_step(client):

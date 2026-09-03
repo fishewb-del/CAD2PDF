@@ -5,15 +5,19 @@ ezdxf.readfile() is strict: one malformed line and the whole drawing is
 refused. That is the right default for a library and the wrong default for
 a plotting service, because the DXF files people actually upload are very
 often machine-generated - and the machine that generates them is frequently
-LibreDWG's dwg2dxf, which writes multi-line notes verbatim:
+LibreDWG's dwg2dxf, which writes a value longer than the 255-byte DXF string
+limit by hard-wrapping it onto a second line:
 
       1
-    CONTRACTOR SHALL REMOVE ALL DEBRIS FROM SITE AND RETURN KEYS TO
+    THIS DRAWING IS THE PROPERTY OF DESIGN GROUP FACILITY SOLUTIONS, INC. ...
     N GROUP FACILITY SOLUTIONS, INC. ON COMPLETION OF WORK, IF REQUESTED.
-     10
-    ...
+      7
+    BORDER1
 
-A DXF value is exactly one line, so the second line of that note lands
+(AutoCAD splits a long MTEXT value into 250-byte chunks under group code 3
+instead, which is legal. dwg2dxf just wraps the line, mid-word.)
+
+A DXF value is exactly one line, so the tail of that title-block note lands
 where the next group code belongs and the reader stops with
 
     Invalid group code "N GROUP FACILITY SOLUTIONS, INC. ..." at line 95113.
@@ -60,6 +64,15 @@ _BINARY_SENTINEL = b"AutoCAD Binary DXF"
 # multi-megabyte string; stage 4 is the right tool for a file like that.
 _MAX_STITCHED_VALUE_BYTES = 64 * 1024
 
+# 255 bytes is the DXF string limit, and dwg2dxf overruns it by hard-wrapping
+# the value at exactly that width - mid-word, with no separator. A line that
+# long is therefore a wrap to rejoin with nothing between the halves; a
+# shorter one ended where the text itself had a line break, which was a
+# space, so it is rejoined with one. Getting this backwards turns
+# "...RETURNED TO DESIGN GROUP..." into "...RETURNED TO DESIG N GROUP..."
+# and breaks MTEXT formatting codes that straddle the split.
+_WRAP_WIDTH_BYTES = 255
+
 
 class DxfReadError(Exception):
     """A DXF file that could not be read even in salvage mode."""
@@ -94,12 +107,13 @@ _SALVAGED_NOTE = (
 
 
 def _stitched_note(count: int) -> str:
-    lines = "line break" if count == 1 else "line breaks"
+    values = "text value" if count == 1 else "text values"
+    was = "was" if count == 1 else "were"
     return (
-        f"This file had {count} {lines} inside text that a DXF file is not "
-        "allowed to contain - a common result of converting a DWG. The text "
-        "was rejoined automatically and the drawing loaded in full; geometry "
-        "and scale are unaffected. Long notes may read as one line."
+        f"This file had {count} long {values} split across two lines, which "
+        f"a DXF file is not allowed to do - a common result of converting a "
+        f"DWG. They {was} rejoined automatically and the drawing loaded in "
+        "full. Geometry and scale are unaffected."
     )
 
 
@@ -122,6 +136,9 @@ def stitch_wrapped_values(src_path: str, dst_path: str) -> int:
     that rhythm: a line sitting in a code position that is not a group code
     can only be the rest of the value above it, so append it there instead
     of leaving it to derail the reader.
+
+    How the two halves are rejoined depends on why they were split - see
+    _WRAP_WIDTH_BYTES.
 
     Returns the number of lines that were rejoined - 0 means the file has no
     wrapped values and re-reading the copy would gain nothing.
@@ -149,7 +166,8 @@ def stitch_wrapped_values(src_path: str, dst_path: str) -> int:
                 # it is and let the recover stage decide what to do.
                 fout.write(line + b"\n")
             elif len(pending) + len(line) + 1 <= _MAX_STITCHED_VALUE_BYTES:
-                pending += b" " + line
+                joiner = b"" if len(pending) >= _WRAP_WIDTH_BYTES else b" "
+                pending += joiner + line
                 stitched += 1
             else:
                 stitched += 1  # counted, but dropped rather than appended
