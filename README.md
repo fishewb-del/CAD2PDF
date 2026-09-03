@@ -215,6 +215,34 @@ Very old or very new DWG revisions occasionally fail to parse. When that
 happens the app says so and suggests *Save As → DXF* from your CAD program,
 which always works.
 
+## Malformed DXF files
+
+Machine-generated DXF is often not quite legal DXF, and `dwg2dxf` is a
+common source of it: a multi-line note from the original drawing is written
+out with its line breaks intact, even though a DXF value has to be exactly
+one line. The second line then lands where the next group code belongs and
+a strict reader stops dead:
+
+```
+Invalid group code "N GROUP FACILITY SOLUTIONS, INC. ON COMPLETION OF WORK, ..." at line 95113.
+```
+
+Nothing is wrong with the drawing — every wall, dimension and layer in it is
+readable — so cad2pdf repairs the file rather than refusing it. It escalates
+only as far as it has to:
+
+| Stage | What it does | Data loss |
+|---|---|---|
+| `ezdxf.readfile` | Strict read. What a clean file gets. | none |
+| `ezdxf.recover` | Repairs damaged structure. | none |
+| stitch + recover | Rejoins string values wrapped across lines, then recovers. | none |
+| `ezdxf.explore` | Salvage mode: skips anything that isn't a tag. | likely |
+
+Anything past the first stage puts a note on the preview, the result panel
+and the CLI's stderr, so you know the file you were sent is malformed even
+though the plot came out fine. The PDF is exact and to scale either way —
+repair happens on the way in, never to the geometry.
+
 ## Privacy
 
 Uploads are processed in a per-request temporary directory that is deleted

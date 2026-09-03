@@ -9,6 +9,7 @@
   const statusBox = document.getElementById("status");
   const resultBox = document.getElementById("result");
   const resultInfo = document.getElementById("result-info");
+  const resultNote = document.getElementById("result-note");
   const preview = document.getElementById("preview");
   const downloadLink = document.getElementById("download-link");
 
@@ -226,9 +227,14 @@
       stage.style.height = BASE_WIDTH / (data.aspect || 1) + "px";
       stage.innerHTML = data.svg;
 
+      // Cleared as well as set: previewing a second file must not leave
+      // the first file's notice sitting under the drawing.
       if (data.note) {
         viewerNote.textContent = data.note;
         viewerNote.hidden = false;
+      } else {
+        viewerNote.textContent = "";
+        viewerNote.hidden = true;
       }
       setStatus(null);
       // Wait for layout so the fit measurement sees real dimensions.
@@ -303,6 +309,18 @@
   function renderResult(data) {
     const info = data.info;
     resultInfo.innerHTML = "";
+
+    // Shown only when the uploaded file was malformed and had to be
+    // repaired to be read. The PDF is exact either way; this is so nobody
+    // is surprised later by the same file failing in another tool.
+    if (data.note) {
+      resultNote.textContent = data.note;
+      resultNote.hidden = false;
+    } else {
+      resultNote.textContent = "";
+      resultNote.hidden = true;
+    }
+
     addInfo("Scale", info.scale + (info.auto_scale ? " (auto-fit)" : ""));
     addInfo("Paper", info.paper + " " + info.orientation);
     addInfo(

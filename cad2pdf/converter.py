@@ -28,7 +28,6 @@ import os
 import re
 from typing import Optional, Tuple
 
-import ezdxf
 from ezdxf.addons.drawing import RenderContext, Frontend
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 from ezdxf.addons.drawing import layout as ezdxf_layout
@@ -53,6 +52,7 @@ matplotlib.use("Agg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_pdf import FigureCanvasPdf
 
+from .dxfread import read_dxf
 from .fontsetup import ensure_fonts
 
 # ezdxf needs a real TrueType font to draw TEXT/MTEXT/dimensions, and a slim
@@ -170,6 +170,9 @@ class ConversionResult:
     fit_mode: bool
     units_autodetected: bool = False
     preview_path: Optional[str] = None
+    # Set when the DXF had to be repaired before it could be read; the
+    # caller shows it to the user. None for a clean file.
+    repair_note: Optional[str] = None
 
 
 def detect_units(doc, default: str = "mm") -> Tuple[str, bool]:
@@ -338,7 +341,8 @@ def convert_dxf_to_pdf(
             f"units must be 'auto' or one of {sorted(UNITS_TO_MM)}"
         )
 
-    doc = ezdxf.readfile(input_path)
+    loaded = read_dxf(input_path)
+    doc = loaded.doc
 
     units_autodetected = False
     if units == "auto":
@@ -490,6 +494,7 @@ def convert_dxf_to_pdf(
         fit_mode=fit_mode,
         units_autodetected=units_autodetected,
         preview_path=preview_path,
+        repair_note=loaded.note,
     )
 
 
@@ -565,6 +570,10 @@ class PreviewResult:
     aspect: float                    # rendered width / height
     simplified: bool = False
     note: Optional[str] = None
+    # Set when the DXF had to be repaired before it could be read. Also
+    # folded into `note`; kept separate so callers can distinguish it from
+    # the simplified-preview notice.
+    repair_note: Optional[str] = None
 
 
 # Rendering the preview through matplotlib took roughly ten seconds on a
@@ -657,7 +666,8 @@ def render_preview(
         max_svg_bytes: above this, re-render simplified rather than send a
             file that would bog down the browser.
     """
-    doc = ezdxf.readfile(input_path)
+    loaded = read_dxf(input_path)
+    doc = loaded.doc
 
     units_autodetected = False
     if units == "auto":
@@ -668,12 +678,13 @@ def render_preview(
 
     svg, box = _render_svg(doc, None)
     simplified = False
-    note = None
+    notes = [loaded.note] if loaded.note else []
 
     if len(svg.encode("utf-8", errors="replace")) > max_svg_bytes:
         svg, box = _render_svg(doc, _SIMPLIFIED_CONFIG)
         simplified = True
-        note = _SIMPLIFIED_NOTE
+        notes.append(_SIMPLIFIED_NOTE)
+    note = " ".join(notes) or None
 
     if not box.has_data or box.size.x <= 0 or box.size.y <= 0:
         raise ValueError("Drawing has no visible geometry in model space")
@@ -700,4 +711,5 @@ def render_preview(
         aspect=_svg_aspect(svg, box.size.x / box.size.y),
         simplified=simplified,
         note=note,
+        repair_note=loaded.note,
     )
