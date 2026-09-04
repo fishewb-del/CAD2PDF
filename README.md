@@ -73,9 +73,16 @@ click-by-click walkthrough that puts this online for free on Render in about
 20 minutes, with no terminal and no credit card. [DEPLOY.md](DEPLOY.md)
 covers the other hosts.
 
+**Drawings too big for a free instance?** Follow
+[CLOUDRUN.md](CLOUDRUN.md). A real cross dock drawing measured 914 MB and
+88 seconds of full-speed CPU to convert, which no 512 MB free tier can do.
+Cloud Run gives it 2 GB and a full vCPU, converts that drawing in about 96
+seconds, and stays inside the free monthly allowance for roughly 1,800 such
+conversions. It does require a card on file.
+
 The app has to run on a server — it can't be a static page, since it needs
-Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for two hosts are
-included; both build the Dockerfile, so DWG support comes with them.
+Python (ezdxf/matplotlib) and the LibreDWG binary. Configs for three hosts
+are included; all build the Dockerfile, so DWG support comes with them.
 
 **Render** (recommended free option) — `render.yaml` is a blueprint:
 New → Blueprint → pick this repo → Apply. You get
@@ -84,6 +91,20 @@ redeploys automatically. The blueprint targets the free plan and sizes the
 app for it: 1 gunicorn worker, a 16 MB upload cap, shorter timeouts. Free
 instances sleep when idle (the first request after a nap takes ~30-60s to
 wake). Full walkthrough: [RENDER.md](RENDER.md).
+
+**Google Cloud Run** (when the drawings are large) — one command from the
+repo root, in Cloud Shell or anywhere with `gcloud`:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
+./deploy/cloudrun.sh
+```
+
+2 GB, one vCPU, **one drawing at a time** (Cloud Run's default of 80
+concurrent requests per instance would run it out of memory), scaled to zero
+when idle and capped at 3 instances. Machine sizing lives at the top of
+`deploy/cloudrun.sh`, app settings in `deploy/cloudrun.env.yaml`. Full
+walkthrough: [CLOUDRUN.md](CLOUDRUN.md).
 
 **Fly.io** — `fly.toml` is ready:
 

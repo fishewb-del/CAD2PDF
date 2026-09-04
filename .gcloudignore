@@ -1,0 +1,37 @@
+# What NOT to upload when `gcloud run deploy --source .` builds the image.
+#
+# Without this file gcloud falls back to .gitignore, which is a different
+# question entirely: .gitignore is about what not to commit, not about what
+# the build needs. The Dockerfile then does its own filtering via
+# .dockerignore, so keep the two in step.
+#
+# .git is the big one. It carries every version of a repo whose history
+# includes multi-megabyte drawings, and none of it reaches the image.
+.git
+.gitignore
+.github
+
+.venv
+.venv-test
+__pycache__/
+*.pyc
+.pytest_cache
+
+# Docs and deployment blueprints for other hosts. The container never reads
+# them, and leaving them out keeps each deploy's upload small.
+docs
+DEPLOY.md
+RENDER.md
+CLOUDRUN.md
+README.md
+render.yaml
+fly.toml
+Procfile
+requirements-dev.txt
+
+tests
+
+# deploy/cloudrun.env.yaml is read by gcloud on this machine, before
+# anything is uploaded, so excluding `deploy/` here would not break it. It
+# stays out of the image instead, via .dockerignore, where it belongs.
+deploy

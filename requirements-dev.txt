@@ -2,3 +2,6 @@
 pytest>=7.0
 pypdf>=4.0
 pillow>=10.0
+# The Cloud Run deployment config is YAML that gcloud parses; the test that
+# keeps it honest parses it the same way rather than by hand.
+PyYAML>=6.0
