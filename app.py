@@ -18,6 +18,7 @@ import tempfile
 import traceback
 
 from ezdxf.fonts.font_manager import FontNotFoundError
+from ezdxf.lldxf.const import DXFStructureError
 from flask import Flask, Response, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
@@ -39,6 +40,7 @@ from cad2pdf.converter import (
     render_preview,
 )
 from cad2pdf.dwg import DwgConversionError, convert_dwg_to_dxf, dwg_available
+from cad2pdf.dxfread import DxfReadError
 from cad2pdf.fontsetup import fallback_font_name, font_count, has_usable_font
 
 MAX_UPLOAD_MB = int(os.environ.get("CAD2PDF_MAX_UPLOAD_MB", "32"))
@@ -206,6 +208,37 @@ def _form_float(name: str, default: float, minimum: float, maximum: float) -> fl
     return value
 
 
+def _read_failure_message(exc: Exception, ext: str) -> str:
+    """
+    Explain a drawing we could not read, in terms of the file the user
+    actually uploaded.
+
+    Two things used to make this message unhelpful. It said "DXF file" even
+    when the user uploaded a DWG, sending them off to re-export a file that
+    was never the problem; and it printed ezdxf's raw parser error, which
+    means nothing outside ezdxf. cad2pdf.dxfread now repairs the malformed
+    files this used to reject outright, so anything still landing here is
+    genuinely unreadable and deserves a next step rather than a stack trace
+    fragment.
+    """
+    detail = str(exc).strip()
+    if ext == ".dwg":
+        return (
+            "This DWG could not be read. The server converted it to DXF, "
+            "but the result was still unreadable even after repair - the "
+            "file may be damaged or use a DWG feature the converter does "
+            "not support. Opening it in your CAD program and saving as "
+            "DXF (2013 or later) will produce a file this can plot. "
+            f"({detail})"
+        )
+    return (
+        "This DXF could not be read, even after attempting to repair it. "
+        "It may be damaged or truncated. Re-exporting it from your CAD "
+        "program as DXF 2013 or later usually fixes this. "
+        f"({detail})"
+    )
+
+
 class UploadRejected(Exception):
     """An upload we can describe a fix for, rather than a crash."""
 
@@ -286,6 +319,9 @@ def api_preview():
             return jsonify(ok=False, error=str(exc)), 400
         except FontNotFoundError:
             return jsonify(ok=False, error=_NO_FONTS_MESSAGE), 500
+        except (DxfReadError, DXFStructureError) as exc:
+            app.logger.error("preview failed to read the drawing: %s", exc)
+            return jsonify(ok=False, error=_read_failure_message(exc, ext)), 400
         except Exception as exc:  # noqa: BLE001 - surface a clean message
             app.logger.error("preview failed: %s", traceback.format_exc())
             return jsonify(
@@ -298,6 +334,7 @@ def api_preview():
         "aspect": round(preview.aspect, 6),
         "simplified": preview.simplified,
         "note": preview.note,
+        "repair_note": preview.repair_note,
         "info": {
             "units": preview.drawing_units,
             "units_autodetected": preview.units_autodetected,
@@ -361,11 +398,14 @@ def api_convert():
             # re-exporting a file that was never the problem.
             app.logger.error("no font available: %s", exc)
             return jsonify(ok=False, error=_NO_FONTS_MESSAGE), 500
+        except (DxfReadError, DXFStructureError) as exc:
+            app.logger.error("could not read the drawing: %s", exc)
+            return jsonify(ok=False, error=_read_failure_message(exc, ext)), 400
         except Exception as exc:  # noqa: BLE001 - surface a clean message
             app.logger.error("conversion failed: %s", traceback.format_exc())
             return jsonify(
                 ok=False,
-                error=f"Could not read this DXF file: {exc}",
+                error=f"Could not convert this drawing: {exc}",
             ), 400
 
         with open(pdf_path, "rb") as fh:
@@ -380,6 +420,9 @@ def api_convert():
         filename=f"{stem or 'drawing'}.pdf",
         pdf_b64=pdf_b64,
         preview_b64=preview_b64,
+        # None unless the file had to be repaired to be readable. The PDF is
+        # still exact; the user is told because the source file is not.
+        note=result.repair_note,
         info={
             "scale": f"1:{result.scale_denominator:g}",
             "scale_denominator": result.scale_denominator,

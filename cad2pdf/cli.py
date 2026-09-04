@@ -75,6 +75,11 @@ def main(argv=None) -> int:
         print(f"cad2pdf: error: {exc}", file=sys.stderr)
         return 1
 
+    if result.repair_note:
+        # stderr, so piping stdout somewhere still gets clean output while
+        # the warning stays visible.
+        print(f"cad2pdf: warning: {result.repair_note}", file=sys.stderr)
+
     print(
         f"Wrote {result.output_path}\n"
         f"  scale:       1:{result.scale_denominator:g}"

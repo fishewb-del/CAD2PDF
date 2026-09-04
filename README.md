@@ -215,6 +215,42 @@ Very old or very new DWG revisions occasionally fail to parse. When that
 happens the app says so and suggests *Save As → DXF* from your CAD program,
 which always works.
 
+## Malformed DXF files
+
+Machine-generated DXF is often not quite legal DXF, and `dwg2dxf` is a
+common source of it. A DXF string value is limited to 255 bytes and has to
+sit on exactly one line; AutoCAD splits a longer one into 250-byte chunks
+under group code 3, which is legal, but `dwg2dxf` just hard-wraps the line
+mid-word. The overflow then lands where the next group code belongs and a
+strict reader stops dead — on a title-block copyright note, in the case
+this was written for:
+
+```
+Invalid group code "N GROUP FACILITY SOLUTIONS, INC. ON COMPLETION OF WORK, ..." at line 95113.
+```
+
+Nothing is wrong with the drawing — every wall, dimension and layer in it is
+readable — so cad2pdf repairs the file rather than refusing it. It escalates
+only as far as it has to:
+
+| Stage | What it does | Data loss |
+|---|---|---|
+| `ezdxf.readfile` | Strict read. What a clean file gets. | none |
+| `ezdxf.recover` | Repairs damaged structure. | none |
+| stitch + recover | Rejoins values wrapped across lines, then recovers. | none |
+| `ezdxf.explore` | Salvage mode: skips anything that isn't a tag. | likely |
+
+The halves are rejoined with nothing between them when the first ran the
+full 255 bytes (a hard wrap, mid-word) and with a space when it stopped
+short (a genuine line break in the text). Getting that backwards would
+quietly turn `RETURNED TO DESIGN GROUP` into `RETURNED TO DESIG N GROUP`
+and break MTEXT formatting codes that straddle the split.
+
+Anything past the first stage puts a note on the preview, the result panel
+and the CLI's stderr, so you know the file you were sent is malformed even
+though the plot came out fine. The PDF is exact and to scale either way —
+repair happens on the way in, never to the geometry.
+
 ## Privacy
 
 Uploads are processed in a per-request temporary directory that is deleted
