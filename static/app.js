@@ -65,6 +65,33 @@
 
   const view = { scale: 1, x: 0, y: 0, fitScale: 1 };
   const PREVIEW_TIMEOUT_MS = 90000;
+  // Longer than the preview: converting is the slower job, and the server
+  // stops itself before gunicorn's own timeout, so this only has to catch
+  // the case where no response comes back at all.
+  const CONVERT_TIMEOUT_MS = 180000;
+
+  // A worker killed for running out of memory returns no body at all, and
+  // res.json() on an empty response throws "Unexpected end of JSON input" -
+  // a browser internal that tells the user nothing about their drawing.
+  // Every response goes through here so that failure is described instead.
+  async function readJson(res) {
+    const text = await res.text();
+    if (!text) {
+      throw new Error(
+        res.status === 413
+          ? "That file is too large to upload."
+          : "The server stopped part-way through this drawing and sent " +
+            "nothing back, which usually means it ran out of memory. " +
+            "Larger drawings need a bigger server than this one."
+      );
+    }
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error("The server sent a reply that could not be read (" +
+        res.status + ").");
+    }
+  }
   const MIN_SCALE = 0.05;
   const MAX_SCALE = 200;
 
@@ -216,7 +243,7 @@
       });
       // A newer file was picked while this was in flight; drop the result.
       if (token !== previewToken) return;
-      const data = await res.json();
+      const data = await readJson(res);
       if (!res.ok || !data.ok) throw new Error(data.error || "Preview failed.");
 
       // Size the stage from the aspect ratio the server measured, rather
@@ -377,18 +404,23 @@
     resultBox.hidden = true;
     setStatus({ text: "Converting…", busy: true }, false);
 
+    // Without this the button spins forever when the server dies mid-request
+    // and the connection never settles, which is exactly what a drawing too
+    // big for the instance used to do.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), CONVERT_TIMEOUT_MS);
+    const slowNotice = setTimeout(() => {
+      setStatus(
+        { text: "Still converting, this is a big drawing…", busy: true },
+        false
+      );
+    }, 8000);
+
     try {
-      const res = await fetch("/api/convert", { method: "POST", body: body });
-      let data;
-      try {
-        data = await res.json();
-      } catch (err) {
-        throw new Error(
-          res.status === 413
-            ? "That file is too large to upload."
-            : "Server error (" + res.status + ")."
-        );
-      }
+      const res = await fetch("/api/convert", {
+        method: "POST", body: body, signal: controller.signal,
+      });
+      const data = await readJson(res);
       if (!res.ok || !data.ok) {
         throw new Error(data.error || "Conversion failed.");
       }
@@ -396,8 +428,17 @@
       renderResult(data);
       resultBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (err) {
-      setStatus(err.message, true);
+      setStatus(
+        err.name === "AbortError"
+          ? "This drawing took too long to convert and the attempt was " +
+            "stopped. It is large enough to need a bigger server than " +
+            "this one."
+          : err.message,
+        true
+      );
     } finally {
+      clearTimeout(deadline);
+      clearTimeout(slowNotice);
       submitBtn.disabled = false;
     }
   });

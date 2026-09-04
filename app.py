@@ -40,6 +40,9 @@ from cad2pdf.converter import (
     render_preview,
 )
 from cad2pdf.dwg import DwgConversionError, convert_dwg_to_dxf, dwg_available
+from cad2pdf.hostlimits import container_memory_mb, memory_budget_mb
+from cad2pdf.sandbox import ChildFailed, WorkloadStopped, run_guarded
+from cad2pdf import sandbox
 from cad2pdf.dxfread import DxfReadError
 from cad2pdf.fontsetup import fallback_font_name, font_count, has_usable_font
 
@@ -57,6 +60,20 @@ if DEFAULT_PAPER not in PAPER_SIZES_MM:
 # sits behind a browser login prompt. Leave it unset and nothing changes.
 AUTH_USERNAME = os.environ.get("CAD2PDF_USERNAME", "cad").strip()
 AUTH_PASSWORD = os.environ.get("CAD2PDF_PASSWORD", "").strip()
+
+# Gunicorn kills a worker that outruns its own timeout, and a killed worker
+# sends no response at all - the browser is left holding an empty body it
+# cannot parse, or a request that never settles. Both budgets below sit
+# under that ceiling so this app is always the one that answers.
+_GUNICORN_TIMEOUT = int(os.environ.get("GUNICORN_TIMEOUT", "120"))
+CONVERT_TIMEOUT = float(
+    os.environ.get("CAD2PDF_CONVERT_TIMEOUT", max(_GUNICORN_TIMEOUT - 15, 30))
+)
+# A preview is meant to be quick, and a slow one is not worth the memory it
+# is holding while the user waits to pick a scale.
+PREVIEW_TIMEOUT = float(
+    os.environ.get("CAD2PDF_PREVIEW_TIMEOUT", min(CONVERT_TIMEOUT, 75))
+)
 
 # Render polls the health check without credentials, so it can never be
 # behind the gate - a 401 there would fail every deploy.
@@ -150,6 +167,10 @@ def _status_payload() -> dict:
             ),
             "workers": int(os.environ.get("WEB_CONCURRENCY", "1")),
             "threads": int(os.environ.get("WEB_THREADS", "4")),
+            "convert_timeout_seconds": round(CONVERT_TIMEOUT),
+            "preview_timeout_seconds": round(PREVIEW_TIMEOUT),
+            "memory_total_mb": _rounded(container_memory_mb()),
+            "memory_budget_mb": _rounded(memory_budget_mb()),
         },
         "versions": runtime_versions(),
     }
@@ -291,6 +312,75 @@ def _stage_dxf(upload, ext: str, workdir: str) -> str:
     return dxf_path
 
 
+def _rounded(value):
+    """Round for display, keeping None as None rather than turning it into 0."""
+    return None if value is None else round(value)
+
+
+def _too_large_message(exc: WorkloadStopped, what: str) -> str:
+    """
+    Say what the server ran out of, in the terms the user can act on.
+
+    They uploaded a drawing that is fine; what is not fine is this server
+    for this drawing. Naming the numbers is the difference between "it
+    broke" and knowing a bigger instance would fix it.
+    """
+    if exc.kind == "memory":
+        budget = exc.detail.get("budget_mb")
+        total = container_memory_mb()
+        sized = ""
+        if budget and total:
+            sized = (
+                f" It is allowed about {budget:.0f} MB for one drawing, out "
+                f"of the {total:.0f} MB this server has in total."
+            )
+        elif budget:
+            sized = f" It is allowed about {budget:.0f} MB for one drawing."
+        return (
+            f"This drawing needs more memory than this server has, so "
+            f"{what} was stopped before it could take the site down "
+            f"with it.{sized} Nothing is wrong with the drawing. Either "
+            f"run this converter on a machine with more memory, or plot a "
+            f"smaller part of the drawing."
+        )
+    seconds = exc.detail.get("budget_seconds")
+    took = f" after {seconds:.0f} seconds" if seconds else ""
+    return (
+        f"This drawing is taking longer than this server allows, so "
+        f"{what} was stopped{took}. Nothing is wrong with the drawing - "
+        f"this instance is small and slow. Either run the converter on a "
+        f"faster machine, or plot a smaller part of the drawing."
+    )
+
+
+# The routes tell a bad scale from a missing font from an unreadable file
+# by exception type, and a type does not survive being carried back from
+# another process as text. Rebuilding it keeps that taxonomy intact, so the
+# guarded path answers exactly as the in-process path always has.
+_RERAISABLE = {
+    exc.__name__: exc
+    for exc in (ValueError, FontNotFoundError, DxfReadError, DXFStructureError)
+}
+
+
+def _run_drawing_work(func, kwargs, *, timeout: float):
+    """
+    Do one drawing's work where it can be stopped instead of the worker.
+
+    A drawing that wants more memory than the instance has would otherwise
+    be resolved by the kernel killing gunicorn, which returns an empty body
+    and leaves the browser waiting on a response that never comes.
+    """
+    if not sandbox.available():
+        return func(**kwargs)
+    try:
+        return run_guarded(
+            func, kwargs=kwargs, memory_mb=memory_budget_mb(), timeout=timeout
+        )
+    except ChildFailed as exc:
+        raise _RERAISABLE.get(exc.exc_type, RuntimeError)(str(exc)) from exc
+
+
 @app.errorhandler(UploadRejected)
 def upload_rejected(exc: UploadRejected):
     return jsonify(ok=False, error=str(exc)), exc.status
@@ -311,10 +401,19 @@ def api_preview():
     with tempfile.TemporaryDirectory(prefix="cad2pdf-preview-") as workdir:
         dxf_path = _stage_dxf(upload, ext, workdir)
         try:
-            preview = render_preview(
-                dxf_path,
-                units=(request.form.get("units") or "auto").strip(),
+            preview = _run_drawing_work(
+                render_preview,
+                {
+                    "input_path": dxf_path,
+                    "units": (request.form.get("units") or "auto").strip(),
+                },
+                timeout=PREVIEW_TIMEOUT,
             )
+        except WorkloadStopped as exc:
+            app.logger.warning("preview stopped (%s): %s", exc.kind, exc.detail)
+            return jsonify(
+                ok=False, error=_too_large_message(exc, "the preview")
+            ), 507
         except ValueError as exc:
             return jsonify(ok=False, error=str(exc)), 400
         except FontNotFoundError:
@@ -373,21 +472,30 @@ def api_convert():
         png_path = os.path.join(workdir, "preview.png")
 
         try:
-            result = convert_dxf_to_pdf(
-                input_path=dxf_path,
-                output_path=pdf_path,
-                scale=scale,
-                paper=paper,
-                orientation=orientation,
-                margin_mm=margin_mm,
-                units=units,
-                show_scale_label=show_label,
-                line_width_scale=line_width_scale,
-                preview_path=png_path,
-                # Uploads are staged as input.dxf; the footer should name
-                # the file the user actually uploaded.
-                source_name=filename,
+            result = _run_drawing_work(
+                convert_dxf_to_pdf,
+                {
+                    "input_path": dxf_path,
+                    "output_path": pdf_path,
+                    "scale": scale,
+                    "paper": paper,
+                    "orientation": orientation,
+                    "margin_mm": margin_mm,
+                    "units": units,
+                    "show_scale_label": show_label,
+                    "line_width_scale": line_width_scale,
+                    "preview_path": png_path,
+                    # Uploads are staged as input.dxf; the footer should
+                    # name the file the user actually uploaded.
+                    "source_name": filename,
+                },
+                timeout=CONVERT_TIMEOUT,
             )
+        except WorkloadStopped as exc:
+            app.logger.warning("convert stopped (%s): %s", exc.kind, exc.detail)
+            return jsonify(
+                ok=False, error=_too_large_message(exc, "the conversion")
+            ), 507
         except ValueError as exc:
             # Expected, user-fixable problems (bad scale, drawing too big
             # for the page, empty drawing, unknown paper size).
