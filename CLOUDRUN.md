@@ -115,8 +115,26 @@ git clone https://github.com/fishewb-del/CAD2PDF.git
 cd CAD2PDF
 ```
 
-If it asks for a GitHub login, the repository is private. Either make it
-public in the repo's **Settings → General → Danger Zone → Change
+Now check that the Cloud Run files are actually there:
+
+```bash
+ls deploy/cloudrun.sh
+```
+
+**If that says `No such file or directory`,** the Cloud Run support has not
+been merged into the default branch yet. Switch to the branch carrying it:
+
+```bash
+git checkout claude/pdf-cad-dxf-error-dgxwsh
+ls deploy/cloudrun.sh
+```
+
+The second `ls` should print the path back to you. Everything below works
+the same either way. (Once that branch is merged, a plain clone is enough
+and this step can be skipped.)
+
+If the clone asks for a GitHub login, the repository is private. Either make
+it public in the repo's **Settings → General → Danger Zone → Change
 visibility**, or generate a personal access token on GitHub and use that as
 the password.
 
@@ -235,6 +253,9 @@ have used: Menu → **Billing** → **Reports**.
 cd ~/CAD2PDF && git pull && ./deploy/cloudrun.sh
 ```
 
+If you had to switch branches in Step 5, `git pull` follows that same
+branch, which is what you want.
+
 **Changing the sizing.** Edit `deploy/cloudrun.env.yaml` for app settings
 (upload limit, timeouts, default sheet size), or set the variables at the
 top of `deploy/cloudrun.sh` for machine settings. For example, to give it
@@ -255,6 +276,7 @@ free allowance.
 
 | What you see | What it means | What to do |
 |---|---|---|
+| `./deploy/cloudrun.sh: No such file or directory` | You are on a branch without the Cloud Run files | `git checkout claude/pdf-cad-dxf-error-dgxwsh`, see Step 5 |
 | `PERMISSION_DENIED` enabling services | Billing is not linked yet | Redo Step 3, confirm the project is linked |
 | Build fails on LibreDWG | Usually a transient download failure | Run `./deploy/cloudrun.sh` again |
 | `Cloud Build has not been used...` | The API needs a moment after enabling | Wait 60 seconds and re-run the script |
