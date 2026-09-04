@@ -29,11 +29,12 @@ from typing import Any, Callable
 
 from .hostlimits import current_rss_mb
 
-# How often the parent looks at the child. Short enough that a fast
-# allocation is caught before the kernel gets there, long enough not to
-# spend the CPU the conversion needs - which on a 0.1 CPU instance is
-# most of the reason the work is slow in the first place.
-_POLL_SECONDS = 0.2
+# How long the parent waits on the child's pipe before looking at it again.
+# Short enough that a fast allocation is caught before the kernel gets
+# there, long enough not to spend the CPU the conversion needs - which on a
+# 0.1 CPU instance is most of the reason the work is slow in the first
+# place. Reading one small /proc file this often costs nothing measurable.
+_POLL_SECONDS = 0.1
 
 
 class WorkloadStopped(Exception):
@@ -104,22 +105,20 @@ def run_guarded(
 
     try:
         while True:
-            if receiver.poll(_POLL_SECONDS):
-                try:
-                    payload = receiver.recv()
-                except EOFError:
-                    payload = None
-                break
-
+            # Budgets are checked before waiting on the pipe, not after. The
+            # other way round, a child that finished inside one poll interval
+            # handed back its result without ever having been measured - so
+            # whether an oversized drawing was caught came down to how fast
+            # the machine happened to be.
             rss = current_rss_mb(proc.pid)
             if rss is not None:
                 peak_mb = max(peak_mb, rss)
-            if memory_mb is not None and rss is not None and rss > memory_mb:
-                stopped = WorkloadStopped(
-                    "ran out of memory", kind="memory",
-                    peak_mb=round(rss), budget_mb=round(memory_mb),
-                )
-                break
+                if memory_mb is not None and rss > memory_mb:
+                    stopped = WorkloadStopped(
+                        "ran out of memory", kind="memory",
+                        peak_mb=round(rss), budget_mb=round(memory_mb),
+                    )
+                    break
 
             elapsed = time.monotonic() - started
             if timeout is not None and elapsed > timeout:
@@ -127,6 +126,13 @@ def run_guarded(
                     "took too long", kind="time",
                     seconds=round(elapsed), budget_seconds=round(timeout),
                 )
+                break
+
+            if receiver.poll(_POLL_SECONDS):
+                try:
+                    payload = receiver.recv()
+                except EOFError:
+                    payload = None
                 break
 
             if not proc.is_alive() and not receiver.poll(0):

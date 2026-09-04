@@ -38,6 +38,12 @@ def _sleep_forever():
     time.sleep(600)
 
 
+def _finish_quickly():
+    """Work that is over well inside one poll interval."""
+    time.sleep(0.05)
+    return "done"
+
+
 def _raise_value_error():
     raise ValueError("a scale of zero is not a scale")
 
@@ -95,6 +101,21 @@ def test_work_that_eats_memory_is_stopped_and_the_parent_survives():
     assert caught.value.detail["budget_mb"] > 0
     # Nothing leaked into this process: the allocation happened elsewhere.
     assert hostlimits.current_rss_mb() < before + 100
+
+
+def test_short_work_is_still_measured_before_its_result_is_accepted():
+    """
+    Regression. The budget used to be checked only after waiting on the
+    child's pipe, so a child that finished inside one poll interval handed
+    back its result having never been measured. Whether an oversized
+    drawing was caught then came down to how fast the machine was: this
+    passed locally at 0.17s of work against a 0.2s wait, and failed on CI
+    where the same work finished sooner.
+    """
+    with pytest.raises(WorkloadStopped) as caught:
+        run_guarded(_finish_quickly, memory_mb=1)
+
+    assert caught.value.kind == "memory"
 
 
 def test_work_that_runs_too_long_is_stopped():
